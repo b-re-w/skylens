@@ -31,6 +31,7 @@ interface SkylensHandle {
     focusedDetectionId: string | null;
   };
   transport: { status: string };
+  scene: { count: number; positions: Float32Array };
   splat?: { status: string; progress: number };
   CONFIG?: { sim: { speed: number } };
 }
@@ -70,7 +71,8 @@ async function hasWebGL(page: Page, canvasId: string): Promise<boolean> {
 test.describe('per-page boot', () => {
   test('SIM page boots, drives drones, no uncaught errors', async ({ page }) => {
     const errors = trackPageErrors(page);
-    await page.goto(`/sim.html?room=${uniqueRoom()}`);
+    // splat=off → shared procedural fallback: fast + CDN-independent.
+    await page.goto(`/sim.html?room=${uniqueRoom()}&splat=off`);
     await page.waitForFunction(
       () => window.skylens?.role === 'sim' && window.skylens.state.drones.length === 3,
       undefined,
@@ -151,7 +153,7 @@ test.describe('WebRTC integration (SIM <-> RECON)', () => {
     const simErrors = trackPageErrors(sim);
     const reconErrors = trackPageErrors(recon);
 
-    await sim.goto(`/sim.html?room=${room}`);
+    await sim.goto(`/sim.html?room=${room}&splat=off`);
     await recon.goto(`/recon.html?room=${room}&splat=off`);
 
     // Both peers report a live DataChannel.
@@ -266,18 +268,51 @@ test.describe('real Gaussian splat (public sample)', () => {
       timeout: 15_000,
     });
 
-    // Starts loading and reports progress.
-    await expect
-      .poll(() => page.evaluate(() => window.skylens.splat?.status), {
-        timeout: 10_000,
-      })
-      .toBe('loading');
-
-    // Reaches 'ready' — download + parse + GL build all succeeded.
+    // Reaches 'ready' — download + parse + GL build all succeeded. (The scene
+    // itself already loaded before window.skylens was set, so we assert the
+    // final render-ready state rather than racing the intermediate 'loading'.)
     await expect
       .poll(() => page.evaluate(() => window.skylens.splat?.status), {
         timeout: 75_000,
       })
       .toBe('ready');
+  });
+
+  // The core invariant (PROJECT.md §1): SIM and RECON must derive the SAME point
+  // cloud from the SAME splat — SIM shows it low-fi, RECON renders the full splat.
+  test('SIM and RECON derive an identical point cloud from the same splat', async ({
+    browser,
+  }) => {
+    test.setTimeout(90_000);
+    const room = uniqueRoom();
+    const ctx = await browser.newContext();
+    const sim = await ctx.newPage();
+    const recon = await ctx.newPage();
+
+    await sim.goto(`/sim.html?room=${room}&splat=light`);
+    await recon.goto(`/recon.html?room=${room}&splat=light`);
+
+    const ready = (p: Page) =>
+      p.waitForFunction(() => window.skylens?.scene?.count > 0, undefined, {
+        timeout: 60_000,
+      });
+    await Promise.all([ready(sim), ready(recon)]);
+
+    // Read point count + a deterministic fingerprint of sampled positions.
+    const fingerprint = (p: Page) =>
+      p.evaluate(() => {
+        const s = window.skylens.scene;
+        const pts = s.positions;
+        const samples: number[] = [];
+        const step = Math.max(1, Math.floor(pts.length / 60));
+        for (let i = 0; i < pts.length; i += step) samples.push(Math.round(pts[i] * 1000));
+        return { count: s.count, samples };
+      });
+    const [a, b] = await Promise.all([fingerprint(sim), fingerprint(recon)]);
+
+    expect(a.count).toBeGreaterThan(1000);
+    expect(b.count).toBe(a.count);
+    expect(b.samples).toEqual(a.samples);
+    await ctx.close();
   });
 });
