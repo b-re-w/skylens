@@ -48,9 +48,11 @@ export const CONFIG = {
   // sceneSource.ts). Swap `url` for your own capture later.
   splat: {
     enabled: true,
-    url: 'https://huggingface.co/cakewalk/splat-data/resolve/main/train.splat',
-    /** Lighter alternative used by e2e tests (8.6 MB vs 32.8 MB). */
-    urlLight: 'https://huggingface.co/cakewalk/splat-data/resolve/main/nike.splat',
+    // A building interior (indoor room scan) so RECON reads as a structure — the
+    // disaster-site narrative. Public sample from the dylanebert/3dgs dataset.
+    url: 'https://huggingface.co/datasets/dylanebert/3dgs/resolve/main/room/room-7k.splat',
+    /** Lighter building scene used by e2e tests (counter, ~33 MB). */
+    urlLight: 'https://huggingface.co/datasets/dylanebert/3dgs/resolve/main/counter/counter-7k.splat',
   },
 
   // Palette — viewer 1 is deliberately low-fi / cold; viewer 2 warmer/real.
