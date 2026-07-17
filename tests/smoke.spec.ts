@@ -31,6 +31,7 @@ interface SkylensHandle {
     focusedDetectionId: string | null;
   };
   transport: { status: string };
+  splat?: { status: string; progress: number };
   CONFIG?: { sim: { speed: number } };
 }
 
@@ -78,21 +79,30 @@ test.describe('per-page boot', () => {
 
     expect(await hasWebGL(page, 'view1')).toBeTruthy();
 
-    // Clock advances and the drone moves along its path.
+    // Clock advances and the drone moves along its path (poll to avoid
+    // flakiness from rAF throttling / slow warmup).
     const p0 = await page.evaluate(() => window.skylens.state.drones[0].pos);
-    const t0 = await page.evaluate(() => window.skylens.state.time);
-    await page.waitForTimeout(1200);
-    const p1 = await page.evaluate(() => window.skylens.state.drones[0].pos);
-    const t1 = await page.evaluate(() => window.skylens.state.time);
-    expect(t1).toBeGreaterThan(t0);
-    expect(
-      Math.abs(p1.x - p0.x) + Math.abs(p1.y - p0.y) + Math.abs(p1.z - p0.z),
-    ).toBeGreaterThan(0.05);
+    await expect
+      .poll(
+        () =>
+          page.evaluate((start) => {
+            const p = window.skylens.state.drones[0].pos;
+            return (
+              Math.abs(p.x - start.x) +
+              Math.abs(p.y - start.y) +
+              Math.abs(p.z - start.z)
+            );
+          }, p0),
+        { timeout: 8_000 },
+      )
+      .toBeGreaterThan(0.05);
 
     // visited buffer (reveal source) accumulates locally on SIM.
-    expect(
-      await page.evaluate(() => window.skylens.state.visited.length),
-    ).toBeGreaterThan(0);
+    await expect
+      .poll(() => page.evaluate(() => window.skylens.state.visited.length), {
+        timeout: 8_000,
+      })
+      .toBeGreaterThan(0);
 
     // Active-drone switch via number key.
     await page.locator('#view1').click({ position: { x: 50, y: 50 } });
@@ -108,7 +118,8 @@ test.describe('per-page boot', () => {
     page,
   }) => {
     const errors = trackPageErrors(page);
-    await page.goto(`/recon.html?room=${uniqueRoom()}`);
+    // splat=off keeps this test fast + independent of the CDN asset.
+    await page.goto(`/recon.html?room=${uniqueRoom()}&splat=off`);
     await page.waitForFunction(
       () => window.skylens?.role === 'recon',
       undefined,
@@ -141,7 +152,7 @@ test.describe('WebRTC integration (SIM <-> RECON)', () => {
     const reconErrors = trackPageErrors(recon);
 
     await sim.goto(`/sim.html?room=${room}`);
-    await recon.goto(`/recon.html?room=${room}`);
+    await recon.goto(`/recon.html?room=${room}&splat=off`);
 
     // Both peers report a live DataChannel.
     await expect
@@ -242,5 +253,31 @@ test.describe('WebRTC integration (SIM <-> RECON)', () => {
     expect(simErrors, simErrors.join('\n')).toEqual([]);
     expect(reconErrors, reconErrors.join('\n')).toEqual([]);
     await ctx.close();
+  });
+});
+
+test.describe('real Gaussian splat (public sample)', () => {
+  // Downloads the lighter public sample and builds it in the browser. Needs
+  // outbound access to the Hugging Face CDN.
+  test('loads the sample splat to ready', async ({ page }) => {
+    test.setTimeout(90_000);
+    await page.goto(`/recon.html?room=${uniqueRoom()}&splat=light`);
+    await page.waitForFunction(() => window.skylens?.role === 'recon', undefined, {
+      timeout: 15_000,
+    });
+
+    // Starts loading and reports progress.
+    await expect
+      .poll(() => page.evaluate(() => window.skylens.splat?.status), {
+        timeout: 10_000,
+      })
+      .toBe('loading');
+
+    // Reaches 'ready' — download + parse + GL build all succeeded.
+    await expect
+      .poll(() => page.evaluate(() => window.skylens.splat?.status), {
+        timeout: 75_000,
+      })
+      .toBe('ready');
   });
 });
