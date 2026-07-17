@@ -261,8 +261,13 @@ test.describe('WebRTC integration (SIM <-> RECON)', () => {
 test.describe('real Gaussian splat (public sample)', () => {
   // Downloads the lighter public sample and builds it in the browser. Needs
   // outbound access to the Hugging Face CDN.
-  test('loads the sample splat to ready', async ({ page }) => {
+  test('loads the sample splat to ready and the reveal shader compiles', async ({
+    page,
+  }) => {
     test.setTimeout(90_000);
+    // Shader-compile failures (e.g. a bad onBeforeCompile injection) surface as
+    // console errors — track them so a broken splat-reveal patch fails here.
+    const errors = trackPageErrors(page);
     await page.goto(`/recon.html?room=${uniqueRoom()}&splat=light`);
     await page.waitForFunction(() => window.skylens?.role === 'recon', undefined, {
       timeout: 15_000,
@@ -276,6 +281,10 @@ test.describe('real Gaussian splat (public sample)', () => {
         timeout: 75_000,
       })
       .toBe('ready');
+
+    // Let a few frames render so the patched splat material actually compiles.
+    await page.waitForTimeout(1500);
+    expect(errors, errors.join('\n')).toEqual([]);
   });
 
   // The core invariant (PROJECT.md §1): SIM and RECON must derive the SAME point
@@ -313,6 +322,51 @@ test.describe('real Gaussian splat (public sample)', () => {
     expect(a.count).toBeGreaterThan(1000);
     expect(b.count).toBe(a.count);
     expect(b.samples).toEqual(a.samples);
+    await ctx.close();
+  });
+
+  // With the splat on, RECON reveals the SPLAT itself (coverage texture + patched
+  // shader) — no point overlay. Verify drones scanning drive detections revealed
+  // through the splat-reveal path (isAreaRevealed reads the same coverage the
+  // shader samples), with no shader/runtime errors.
+  test('splat-mode: drones scanning reveal the splat and detections', async ({
+    browser,
+  }) => {
+    test.setTimeout(120_000);
+    const room = uniqueRoom();
+    const ctx = await browser.newContext();
+    const sim = await ctx.newPage();
+    const recon = await ctx.newPage();
+    const reconErrors = trackPageErrors(recon);
+
+    await sim.goto(`/sim.html?room=${room}&splat=light`);
+    await recon.goto(`/recon.html?room=${room}&splat=light`);
+
+    await Promise.all([
+      sim.waitForFunction(() => window.skylens?.role === 'sim', undefined, { timeout: 60_000 }),
+      recon.waitForFunction(() => window.skylens?.role === 'recon', undefined, { timeout: 60_000 }),
+    ]);
+
+    await expect
+      .poll(() => recon.evaluate(() => window.skylens.transport.status), { timeout: 45_000 })
+      .toBe('connected');
+
+    // Fast-forward so drones sweep and the splat coverage reveals detections.
+    await sim.evaluate(() => {
+      window.skylens.CONFIG!.sim.speed = 25;
+    });
+
+    await expect
+      .poll(
+        () =>
+          recon.evaluate(
+            () => window.skylens.state.detections.filter((d) => d.revealed).length,
+          ),
+        { timeout: 45_000 },
+      )
+      .toBeGreaterThan(0);
+
+    expect(reconErrors, reconErrors.join('\n')).toEqual([]);
     await ctx.close();
   });
 });
