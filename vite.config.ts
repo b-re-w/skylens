@@ -1,0 +1,19 @@
+import { defineConfig } from 'vite';
+
+// Multi-page build: a landing page plus the two role pages that each run on a
+// separate computer (SIM and RECON).
+export default defineConfig({
+  server: {
+    // Expose on the LAN so the other computer can load the page.
+    host: true,
+  },
+  build: {
+    rollupOptions: {
+      input: {
+        main: 'index.html',
+        sim: 'sim.html',
+        recon: 'recon.html',
+      },
+    },
+  },
+});

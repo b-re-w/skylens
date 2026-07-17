@@ -155,6 +155,11 @@ vite.config.ts.timestamp-*
 *.sln
 *.sw?
 
+# Playwright
+/test-results/
+/playwright-report/
+/playwright/.cache/
+
 # AI Agents
 .omc
 .claude
