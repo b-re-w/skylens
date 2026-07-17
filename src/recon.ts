@@ -6,18 +6,21 @@
 // Consumes state snapshots from the SIM computer over WebRTC and computes reveal,
 // detection markers, and the camera state machine locally. The clock and drone
 // poses come from the wire; confirmations happen here and stay local.
+//
+// The scene is the SAME splat SIM shows as low-fi points — here rendered as the
+// full Gaussian splat, fit with the transform derived from its own bounds.
 
 import './style.css';
 import { state } from './core/store.ts';
-import { CONFIG } from './core/config.ts';
-import { buildSceneData } from './data/sceneData.ts';
+import { loadScene, resolveSplatUrl } from './data/sceneSource.ts';
+import { buildDetections } from './data/detections.ts';
 import { ReconViewer } from './viewer2/reconViewer.ts';
-import type { SplatOptions } from './viewer2/splatScene.ts';
 import { initUI } from './ui/overlay.ts';
 import { createTransport } from './net/peer.ts';
 import { applyState } from './net/protocol.ts';
 import type { StateSnapshot } from './net/protocol.ts';
 import { roomFromQuery, mountNetBadge } from './net/statusUi.ts';
+import { createLoadingScreen } from './ui/loadingScreen.ts';
 
 function getCanvas(id: string): HTMLCanvasElement {
   const el = document.getElementById(id);
@@ -25,71 +28,71 @@ function getCanvas(id: string): HTMLCanvasElement {
   return el;
 }
 
-/**
- * Resolve the real-splat option from the URL:
- *   ?splat=off            → disable (fast, point-cloud only)
- *   ?splat=light | nike   → the lighter 8.6 MB sample
- *   ?splat=<http…>        → a custom splat URL
- *   (absent)              → the default sample
- */
-function resolveSplat(): SplatOptions | null {
-  const base: SplatOptions = {
-    url: CONFIG.splat.url,
-    position: [...CONFIG.splat.position],
-    rotation: [...CONFIG.splat.rotation],
-    scale: [...CONFIG.splat.scale],
+async function main(): Promise<void> {
+  const loading = createLoadingScreen('RECON · 3D 복원 데이터 로딩');
+  const loaded = await loadScene({
+    url: resolveSplatUrl(),
+    onProgress: (p) => loading.progress(p),
+  });
+  loading.done();
+
+  const detections = buildDetections(loaded.data);
+  const recon = new ReconViewer(getCanvas('view2'), loaded.data, detections);
+  const ui = initUI();
+
+  // Render the full splat with the same transform the point cloud was fit with.
+  // (Re-downloads the same URL, served from browser cache — see sceneSource.ts.)
+  if (loaded.splat) {
+    recon.loadSplat(loaded.splat);
+    mountSplatLoading(recon);
+  }
+
+  const transport = createTransport('recon', roomFromQuery());
+  mountNetBadge(transport, 'recon');
+
+  transport.onData((d) => {
+    const snap = d as StateSnapshot;
+    if (snap && snap.kind === 'state') applyState(snap, state);
+  });
+
+  const resize = (): void => recon.resize();
+  window.addEventListener('resize', resize);
+  resize();
+
+  // --- Render loop ---
+  // state.time advances from incoming snapshots; dt here only drives frame-rate-
+  // independent camera damping/tweening and marker pulsing.
+  const MAX_DT = 1 / 20;
+  let last = performance.now();
+
+  const frame = (now: number): void => {
+    const dt = Math.min((now - last) / 1000, MAX_DT);
+    last = now;
+    recon.update(dt);
+    ui.update();
+    requestAnimationFrame(frame);
   };
-  if (!CONFIG.splat.enabled) return null;
-  const q = new URLSearchParams(window.location.search).get('splat');
-  if (!q) return base;
-  if (q === 'off') return null;
-  if (q === 'light' || q === 'nike') return { ...base, url: CONFIG.splat.urlLight };
-  if (/^https?:\/\//.test(q)) return { ...base, url: q };
-  return base;
-}
-
-const scene = buildSceneData();
-const recon = new ReconViewer(getCanvas('view2'), scene);
-const ui = initUI();
-
-// Attach the real Gaussian splat (test asset) unless disabled.
-const splatOpts = resolveSplat();
-if (splatOpts) {
-  recon.loadSplat(splatOpts);
-  mountSplatLoading();
-}
-
-const transport = createTransport('recon', roomFromQuery());
-mountNetBadge(transport, 'recon');
-
-transport.onData((d) => {
-  const snap = d as StateSnapshot;
-  if (snap && snap.kind === 'state') applyState(snap, state);
-});
-
-function resize(): void {
-  recon.resize();
-}
-window.addEventListener('resize', resize);
-resize();
-
-// --- Render loop ---
-// The sim clock (state.time) advances from incoming snapshots; here dt is only
-// used for frame-rate-independent camera damping/tweening and marker pulsing.
-const MAX_DT = 1 / 20;
-let last = performance.now();
-
-function frame(now: number): void {
-  const dt = Math.min((now - last) / 1000, MAX_DT);
-  last = now;
-  recon.update(dt);
-  ui.update();
   requestAnimationFrame(frame);
-}
-requestAnimationFrame(frame);
 
-// A small badge showing splat download/build progress until the scene is ready.
-function mountSplatLoading(): void {
+  // Debug/e2e handle.
+  (window as unknown as { skylens?: unknown }).skylens = {
+    role: 'recon',
+    state,
+    scene: loaded.data,
+    transport,
+    splat: {
+      get status() {
+        return recon.splatStatus;
+      },
+      get progress() {
+        return recon.splatProgress;
+      },
+    },
+  };
+}
+
+// A small badge showing splat render-build progress until the scene is ready.
+function mountSplatLoading(recon: ReconViewer): void {
   const host = document.getElementById('overlay-recon');
   if (!host) return;
   const el = document.createElement('div');
@@ -100,9 +103,8 @@ function mountSplatLoading(): void {
   const tick = (): void => {
     const s = recon.splatStatus;
     let text = '';
-    if (s === 'loading') text = `실사 3D 복원 데이터 로딩… ${Math.round(recon.splatProgress)}%`;
+    if (s === 'loading') text = `실사 3D 렌더 준비… ${Math.round(recon.splatProgress)}%`;
     else if (s === 'error') text = '실사 3D 로드 실패 — 포인트클라우드로 진행';
-    // 'ready'/'idle' → hide.
     if (text !== lastText) {
       lastText = text;
       el.textContent = text;
@@ -114,18 +116,4 @@ function mountSplatLoading(): void {
   requestAnimationFrame(tick);
 }
 
-// Debug/e2e handle.
-(window as unknown as { skylens?: unknown }).skylens = {
-  role: 'recon',
-  state,
-  scene,
-  transport,
-  splat: {
-    get status() {
-      return recon.splatStatus;
-    },
-    get progress() {
-      return recon.splatProgress;
-    },
-  },
-};
+void main();

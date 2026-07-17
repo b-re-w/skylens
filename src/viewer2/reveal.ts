@@ -1,11 +1,13 @@
 // Progressive reveal field for viewer 2 (§5.2). Consumes the lagged
-// `state.visited` trail from the drone module and blooms nearby points of
-// the full point cloud into visibility over CONFIG.reveal.fadeSeconds.
+// `state.visited` trail from the drone module and blooms nearby points of the
+// full point cloud into visibility over CONFIG.reveal.fadeSeconds.
 //
-// Perf approach: brute-force distance test, but only against NEWLY-active
-// visited spots each frame (not the whole trail), and only for points not
-// already revealed. A coarse uniform grid buckets the cloud so each new
-// visited spot only tests points in nearby cells instead of the full cloud.
+// Semantics: an aerial scan reveals the vertical COLUMN beneath the drone, so
+// proximity is measured horizontally (XZ) and ignores altitude. This makes
+// reveal independent of how high the drones fly and of the scene's height —
+// a point is revealed once a drone has passed over its ground footprint. Points
+// are bucketed in a 2D (XZ) uniform grid so each new visited spot only tests
+// points in nearby cells instead of the whole cloud.
 
 import type { Visited } from '../core/types';
 import { CONFIG } from '../core/config';
@@ -21,7 +23,7 @@ export class RevealField {
   private readonly positions: Float32Array;
   private readonly count: number;
 
-  /** Uniform grid: cell key -> point indices, for fast spatial lookup. */
+  /** Uniform 2D grid: XZ cell key -> point indices, for fast spatial lookup. */
   private readonly grid = new Map<string, number[]>();
 
   /** How many entries of state.visited we've already consumed. */
@@ -35,17 +37,16 @@ export class RevealField {
     this.buildGrid();
   }
 
-  private cellKey(x: number, y: number, z: number): string {
+  private cellKey(x: number, z: number): string {
     const cx = Math.floor(x / CELL_SIZE);
-    const cy = Math.floor(y / CELL_SIZE);
     const cz = Math.floor(z / CELL_SIZE);
-    return `${cx}_${cy}_${cz}`;
+    return `${cx}_${cz}`;
   }
 
   private buildGrid(): void {
     for (let i = 0; i < this.count; i++) {
       const j = i * 3;
-      const key = this.cellKey(this.positions[j], this.positions[j + 1], this.positions[j + 2]);
+      const key = this.cellKey(this.positions[j], this.positions[j + 2]);
       let bucket = this.grid.get(key);
       if (!bucket) {
         bucket = [];
@@ -56,15 +57,14 @@ export class RevealField {
   }
 
   /**
-   * Advance reveal state. `visited` is the full trail (already lagged upstream
-   * by the caller passing only entries with t <= now - lagSeconds), `now` is
-   * sim time, `dt` is frame delta. Returns true if any progress values changed
-   * (so the caller knows to mark the geometry attribute dirty).
+   * Advance reveal state. `visitedLagged` is the trail already lagged upstream
+   * (only entries with t <= now - lagSeconds), `dt` is frame delta. Returns true
+   * if any progress values changed (so the caller marks the attribute dirty).
    */
   update(visitedLagged: Visited[], now: number, dt: number): boolean {
     let dirty = false;
 
-    // Activate bloom for any newly-lagged-in visited spots.
+    // Activate bloom for any newly-lagged-in visited spots (XZ column).
     if (this.consumedVisited < visitedLagged.length) {
       const radius = CONFIG.reveal.radius;
       const radiusSq = radius * radius;
@@ -72,25 +72,22 @@ export class RevealField {
 
       for (let vi = this.consumedVisited; vi < visitedLagged.length; vi++) {
         const spot = visitedLagged[vi];
-        const [sx, sy, sz] = spot.pos;
+        const sx = spot.pos[0];
+        const sz = spot.pos[2];
         const cx = Math.floor(sx / CELL_SIZE);
-        const cy = Math.floor(sy / CELL_SIZE);
         const cz = Math.floor(sz / CELL_SIZE);
 
         for (let gx = cx - cellRadius; gx <= cx + cellRadius; gx++) {
-          for (let gy = cy - cellRadius; gy <= cy + cellRadius; gy++) {
-            for (let gz = cz - cellRadius; gz <= cz + cellRadius; gz++) {
-              const bucket = this.grid.get(`${gx}_${gy}_${gz}`);
-              if (!bucket) continue;
-              for (const pi of bucket) {
-                if (this.started[pi]) continue;
-                const j = pi * 3;
-                const dx = this.positions[j] - sx;
-                const dy = this.positions[j + 1] - sy;
-                const dz = this.positions[j + 2] - sz;
-                if (dx * dx + dy * dy + dz * dz <= radiusSq) {
-                  this.started[pi] = 1;
-                }
+          for (let gz = cz - cellRadius; gz <= cz + cellRadius; gz++) {
+            const bucket = this.grid.get(`${gx}_${gz}`);
+            if (!bucket) continue;
+            for (const pi of bucket) {
+              if (this.started[pi]) continue;
+              const j = pi * 3;
+              const dx = this.positions[j] - sx;
+              const dz = this.positions[j + 2] - sz;
+              if (dx * dx + dz * dz <= radiusSq) {
+                this.started[pi] = 1;
               }
             }
           }
@@ -113,28 +110,25 @@ export class RevealField {
     return dirty;
   }
 
-  /** True if any point within `radius` of `pos` has begun revealing. */
+  /** True if any point within `radius` (XZ) of `pos` has begun revealing. */
   isAreaRevealed(pos: [number, number, number], radius = CONFIG.reveal.radius): boolean {
-    const [sx, sy, sz] = pos;
+    const sx = pos[0];
+    const sz = pos[2];
     const radiusSq = radius * radius;
     const cellRadius = Math.ceil(radius / CELL_SIZE);
     const cx = Math.floor(sx / CELL_SIZE);
-    const cy = Math.floor(sy / CELL_SIZE);
     const cz = Math.floor(sz / CELL_SIZE);
 
     for (let gx = cx - cellRadius; gx <= cx + cellRadius; gx++) {
-      for (let gy = cy - cellRadius; gy <= cy + cellRadius; gy++) {
-        for (let gz = cz - cellRadius; gz <= cz + cellRadius; gz++) {
-          const bucket = this.grid.get(`${gx}_${gy}_${gz}`);
-          if (!bucket) continue;
-          for (const pi of bucket) {
-            if (!this.started[pi]) continue;
-            const j = pi * 3;
-            const dx = this.positions[j] - sx;
-            const dy = this.positions[j + 1] - sy;
-            const dz = this.positions[j + 2] - sz;
-            if (dx * dx + dy * dy + dz * dz <= radiusSq) return true;
-          }
+      for (let gz = cz - cellRadius; gz <= cz + cellRadius; gz++) {
+        const bucket = this.grid.get(`${gx}_${gz}`);
+        if (!bucket) continue;
+        for (const pi of bucket) {
+          if (!this.started[pi]) continue;
+          const j = pi * 3;
+          const dx = this.positions[j] - sx;
+          const dz = this.positions[j + 2] - sz;
+          if (dx * dx + dz * dz <= radiusSq) return true;
         }
       }
     }

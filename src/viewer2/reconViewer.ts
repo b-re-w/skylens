@@ -9,8 +9,7 @@
 
 import * as THREE from 'three';
 import type { SceneData } from '../data/sceneData';
-import type { DetectionRuntime } from '../core/types';
-import { DETECTIONS } from '../data/detections';
+import type { Detection, DetectionRuntime } from '../core/types';
 import { state, emit } from '../core/store';
 import { CONFIG } from '../core/config';
 import { RevealField } from './reveal.ts';
@@ -68,7 +67,7 @@ export class ReconViewer {
   private readonly markers: MarkerVisual[] = [];
   private splat: SplatScene | null = null;
 
-  constructor(canvas: HTMLCanvasElement, sceneData: SceneData) {
+  constructor(canvas: HTMLCanvasElement, sceneData: SceneData, detections: Detection[]) {
     this.canvas = canvas;
 
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
@@ -108,7 +107,7 @@ export class ReconViewer {
 
     // Initialize shared detection state on first construction (state owner).
     if (state.detections.length === 0) {
-      state.detections = DETECTIONS.map((d) => ({
+      state.detections = detections.map((d) => ({
         ...d,
         revealed: false,
         confirmed: false,

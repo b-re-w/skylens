@@ -245,6 +245,55 @@ body {
   background: #8a93a6;
 }
 
+/* --- Full-screen loading overlay --- */
+.loading-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #05070c;
+  transition: opacity 0.4s ease;
+}
+.loading-screen.is-hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+.loading-screen__box {
+  width: min(360px, 72vw);
+  text-align: center;
+}
+.loading-screen__title {
+  font-size: 15px;
+  letter-spacing: 0.08em;
+  color: #cdd7e6;
+  margin-bottom: 14px;
+}
+.loading-screen__bar {
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+}
+.loading-screen__bar > span {
+  display: block;
+  height: 100%;
+  width: 0%;
+  border-radius: 3px;
+  background: var(--sim-ink);
+  transition: width 0.2s ease;
+}
+.loading-screen.is-error .loading-screen__bar > span {
+  background: var(--danger);
+}
+.loading-screen__text {
+  margin-top: 10px;
+  font-size: 12px;
+  color: #7f93b0;
+  font-variant-numeric: tabular-nums;
+}
+
 /* --- Splat loading badge --- */
 .splat-loading {
   position: absolute;

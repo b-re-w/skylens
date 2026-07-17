@@ -1,30 +1,36 @@
-// Manually-placed detection markers. PROJECT.md §2-3 / §7: in the mid-eval
-// prototype these coordinates are authored by hand (a legit demo choice), later
-// swapped for real UNet + Depth-Map raycasting output. Positions sit inside the
-// scene footprint so they get revealed as drones sweep past.
+// Detection markers (PROJECT.md §2-3 / §7). Positions are DERIVED from the actual
+// scene cloud so they always sit on the reconstructed geometry regardless of which
+// splat is loaded (and so they get revealed as drones sweep past). Kind/label/
+// confidence stay authored. Both computers derive from the identical cloud.
 
-import type { Detection } from '../core/types';
+import type { Detection, Vec3 } from '../core/types';
+import type { SceneData } from './sceneData.ts';
 
-export const DETECTIONS: Detection[] = [
-  {
-    id: 'p1',
-    kind: 'person',
-    pos: [-9, 1.2, 5],
-    label: '생존자 추정 · 구역 A',
-    confidence: 0.86,
-  },
-  {
-    id: 'p2',
-    kind: 'person',
-    pos: [10, 2.4, 4],
-    label: '생존자 추정 · 구역 B',
-    confidence: 0.74,
-  },
-  {
-    id: 'd1',
-    kind: 'danger',
-    pos: [-2, 3.0, 8],
-    label: '붕괴 위험구역 · 중앙',
-    confidence: 0.91,
-  },
+interface DetectionTemplate {
+  id: string;
+  kind: 'person' | 'danger';
+  label: string;
+  confidence: number;
+  /** Where to sample the cloud, as a fraction of the point count (0..1). */
+  at: number;
+}
+
+const TEMPLATES: DetectionTemplate[] = [
+  { id: 'p1', kind: 'person', label: '생존자 추정 · 구역 A', confidence: 0.86, at: 0.22 },
+  { id: 'p2', kind: 'person', label: '생존자 추정 · 구역 B', confidence: 0.74, at: 0.63 },
+  { id: 'd1', kind: 'danger', label: '붕괴 위험구역 · 중앙', confidence: 0.91, at: 0.45 },
 ];
+
+/** Build detections by sampling deterministic points from the scene cloud. */
+export function buildDetections(data: SceneData): Detection[] {
+  const n = data.count;
+  return TEMPLATES.map((tpl) => {
+    const idx = Math.min(n - 1, Math.max(0, Math.floor(tpl.at * n)));
+    const pos: Vec3 = [
+      data.positions[idx * 3],
+      data.positions[idx * 3 + 1],
+      data.positions[idx * 3 + 2],
+    ];
+    return { id: tpl.id, kind: tpl.kind, pos, label: tpl.label, confidence: tpl.confidence };
+  });
+}

@@ -35,5 +35,29 @@ declare module '@mkkellogg/gaussian-splats-3d' {
     constructor(options?: Record<string, unknown>);
   }
 
+  /** A parsed splat buffer. We only read centers/colors to derive a point cloud. */
+  export interface SplatBuffer {
+    getSplatCount(): number;
+    getSplatCenter(
+      index: number,
+      outCenter: { x: number; y: number; z: number },
+      transform?: unknown,
+    ): void;
+    getSplatColor(index: number, outColor: { set(r: number, g: number, b: number, a: number): unknown }): void;
+  }
+
+  export class SplatLoader {
+    static loadFromURL(
+      fileName: string,
+      onProgress?: (percent: number, percentLabel?: string, chunk?: unknown) => void,
+      progressiveLoadToSplatBuffer?: boolean,
+      onSectionBuilt?: ((...a: unknown[]) => void) | undefined,
+      splatAlphaRemovalThreshold?: number,
+      inMemoryCompressionLevel?: number,
+      optimizeSplatData?: boolean,
+      headers?: unknown,
+    ): Promise<SplatBuffer>;
+  }
+
   export const SceneRevealMode: { Instant: number; Gradual: number; Default: number };
 }

@@ -4,9 +4,8 @@ import * as THREE from 'three';
 import { state } from '../core/store.ts';
 import { CONFIG } from '../core/config.ts';
 import { samplePath, pathDuration, dampFactor, easeInOut, clamp } from '../core/math.ts';
-import { DRONE_PATHS } from '../data/paths.ts';
 import { createManualInput } from './manualControl.ts';
-import type { DroneRuntime } from '../core/types';
+import type { DroneRuntime, DronePath } from '../core/types';
 
 export interface DroneController {
   update(dt: number): void;
@@ -44,12 +43,12 @@ function quatFromForward(forward: THREE.Vector3): THREE.Quaternion {
   return new THREE.Quaternion().setFromRotationMatrix(m);
 }
 
-export function createDroneController(): DroneController {
+export function createDroneController(paths: DronePath[]): DroneController {
   const input = createManualInput();
   const locals = new Map<number, DroneLocal>();
 
   // Initialize state.drones from the preset paths, one per path, at t=0.
-  state.drones = DRONE_PATHS.map((path): DroneRuntime => {
+  state.drones = paths.map((path): DroneRuntime => {
     const { pos, forward } = samplePath(path.waypoints, path.waypoints[0]?.t ?? 0);
     locals.set(path.id, {
       idleTime: 0,
@@ -72,7 +71,7 @@ export function createDroneController(): DroneController {
   });
 
   function pathFor(id: number) {
-    return DRONE_PATHS.find((p) => p.id === id);
+    return paths.find((p) => p.id === id);
   }
 
   function recordVisited(drone: DroneRuntime, local: DroneLocal, dt: number): void {

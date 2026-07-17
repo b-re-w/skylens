@@ -6,16 +6,21 @@
 // Owns the simulation: runs the drone controller + the low-fi viewer, advances
 // the shared clock, and streams state snapshots to the RECON computer over the
 // WebRTC DataChannel. Keyboard control (fly / switch drone / pause) lives here.
+//
+// The scene is the SAME splat RECON renders — here it's shown as a low-fi point
+// cloud derived from the splat's own points (PROJECT.md §1: one source, two views).
 
 import './style.css';
 import { state } from './core/store.ts';
 import { CONFIG } from './core/config.ts';
-import { buildSceneData } from './data/sceneData.ts';
+import { loadScene, resolveSplatUrl } from './data/sceneSource.ts';
+import { buildDronePaths } from './data/paths.ts';
 import { createDroneController } from './drones/pathFollower.ts';
 import { LowfiViewer } from './viewer1/lowfiViewer.ts';
 import { createTransport } from './net/peer.ts';
 import { encodeState } from './net/protocol.ts';
 import { roomFromQuery, mountNetBadge } from './net/statusUi.ts';
+import { createLoadingScreen } from './ui/loadingScreen.ts';
 
 function getCanvas(id: string): HTMLCanvasElement {
   const el = document.getElementById(id);
@@ -23,68 +28,77 @@ function getCanvas(id: string): HTMLCanvasElement {
   return el;
 }
 
-const scene = buildSceneData();
-const drones = createDroneController();
-const lowfi = new LowfiViewer(getCanvas('view1'), scene);
+async function main(): Promise<void> {
+  const loading = createLoadingScreen('SIM · 장면 로딩');
+  const loaded = await loadScene({
+    url: resolveSplatUrl(),
+    onProgress: (p) => loading.progress(p),
+  });
+  loading.done();
 
-const transport = createTransport('sim', roomFromQuery());
-mountNetBadge(transport, 'sim');
+  const paths = buildDronePaths(loaded.data.bounds);
+  const drones = createDroneController(paths);
+  const lowfi = new LowfiViewer(getCanvas('view1'), loaded.data);
 
-function resize(): void {
-  lowfi.resize();
-}
-window.addEventListener('resize', resize);
-resize();
+  const transport = createTransport('sim', roomFromQuery());
+  mountNetBadge(transport, 'sim');
 
-// --- Snapshot streaming (throttled) ---
-const SEND_INTERVAL = 1 / 30; // 30 Hz
-let sendAcc = 0;
-let sentVisited = 0;
+  const resize = (): void => lowfi.resize();
+  window.addEventListener('resize', resize);
+  resize();
 
-function stream(): void {
-  if (transport.status !== 'connected') return;
-  const snap = encodeState(state, sentVisited);
-  transport.send(snap);
-  sentVisited = snap.visitedTotal;
-}
+  // --- Snapshot streaming (throttled) ---
+  const SEND_INTERVAL = 1 / 30; // 30 Hz
+  let sendAcc = 0;
+  let sentVisited = 0;
 
-// --- Main loop ---
-const MAX_DT = 1 / 20;
-let last = performance.now();
+  const stream = (): void => {
+    if (transport.status !== 'connected') return;
+    const snap = encodeState(state, sentVisited);
+    transport.send(snap);
+    sentVisited = snap.visitedTotal;
+  };
 
-function frame(now: number): void {
-  const real = (now - last) / 1000;
-  last = now;
-  const dt = Math.min(real, MAX_DT) * CONFIG.sim.speed;
+  // --- Main loop ---
+  const MAX_DT = 1 / 20;
+  let last = performance.now();
 
-  if (state.running) {
-    state.time += dt;
-    drones.update(dt);
-    sendAcc += real;
-    if (sendAcc >= SEND_INTERVAL) {
-      sendAcc = 0;
-      stream();
+  const frame = (now: number): void => {
+    const real = (now - last) / 1000;
+    last = now;
+    const dt = Math.min(real, MAX_DT) * CONFIG.sim.speed;
+
+    if (state.running) {
+      state.time += dt;
+      drones.update(dt);
+      sendAcc += real;
+      if (sendAcc >= SEND_INTERVAL) {
+        sendAcc = 0;
+        stream();
+      }
     }
-  }
 
-  lowfi.update(dt);
+    lowfi.update(dt);
+    requestAnimationFrame(frame);
+  };
   requestAnimationFrame(frame);
+
+  // --- Pause toggle (space) ---
+  window.addEventListener('keydown', (e) => {
+    if (e.code === 'Space') {
+      e.preventDefault();
+      state.running = !state.running;
+    }
+  });
+
+  // Debug/e2e handle.
+  (window as unknown as { skylens?: unknown }).skylens = {
+    role: 'sim',
+    state,
+    scene: loaded.data,
+    CONFIG,
+    transport,
+  };
 }
-requestAnimationFrame(frame);
 
-// --- Pause toggle (space) ---
-window.addEventListener('keydown', (e) => {
-  if (e.code === 'Space') {
-    e.preventDefault();
-    state.running = !state.running;
-  }
-});
-
-// Debug/e2e handle.
-(window as unknown as { skylens?: unknown }).skylens = {
-  role: 'sim',
-  state,
-  scene,
-  CONFIG,
-  transport,
-};
+void main();
