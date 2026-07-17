@@ -13,7 +13,8 @@
 ![lang](https://img.shields.io/badge/TypeScript-6.0-3178c6)
 ![build](https://img.shields.io/badge/Vite-8-646cff)
 ![sync](https://img.shields.io/badge/WebRTC-PeerJS%20%2B%20STUN-ff9a4d)
-![tests](https://img.shields.io/badge/e2e-Playwright%203%2F3-39d98a)
+![splat](https://img.shields.io/badge/Gaussian%20Splatting-real-c084fc)
+![tests](https://img.shields.io/badge/e2e-Playwright%204%2F4-39d98a)
 
 </div>
 
@@ -93,6 +94,19 @@ npm run dev
 
 > 방을 나누려면 두 URL의 `?room=` 값을 똑같이 바꾸면 됩니다. 공개 브로커를 공유하므로 데모마다 고유한 room 이름을 권장합니다.
 
+### RECON 스플랫 옵션 (`?splat=`)
+
+RECON 페이지는 실사 Gaussian Splatting을 렌더합니다. 에셋은 공개 CDN에서 런타임 로드되며 저장소에 커밋되지 않습니다.
+
+| 쿼리 | 동작 |
+|---|---|
+| (없음) | 기본 공개 샘플(train, 32.8 MB) 로드 |
+| `?splat=light` | 가벼운 샘플(nike, 8.6 MB) — 빠른 확인용 |
+| `?splat=off` | 스플랫 끄고 포인트클라우드만 (가장 가벼움) |
+| `?splat=https://…` | 임의의 `.splat`/`.ply` URL 로드 |
+
+> 스플랫의 위치·회전·스케일은 [src/core/config.ts](src/core/config.ts)의 `splat`에서 조정합니다(첫 실제 렌더에서 씬에 맞게 튜닝).
+
 ---
 
 ## 조작법 (SIM 화면)
@@ -140,6 +154,7 @@ npm run dev
    ├─ viewer2/
    │  ├─ reconViewer.ts  RECON: 3D 복원 상황판
    │  ├─ reveal.ts       드론 경로 기반 점진적 복원
+   │  ├─ splatScene.ts   실사 Gaussian Splatting 레이어 (DropInViewer)
    │  └─ cameraSync.ts   SYNCED → FOCUSING → LOCKED → RETURNING
    └─ ui/
       ├─ overlay.ts      HUD · 탐지 카드 · 확인 버튼
@@ -159,18 +174,19 @@ tests/
 - ✅ 드론 3대 프리셋 경로 + Catmull-Rom 보간 + 수동 조작/자동 복귀
 - ✅ 시간차 progressive reveal (드론이 지나간 자리를 지연 복원)
 - ✅ 탐지 → 자동 포커스 → 확인 → 복귀 카메라 상태머신
-- ✅ E2E 3종 (페이지별 런타임 + 실제 WebRTC 연결·스트리밍·탐지 사이클)
+- ✅ **실사 Gaussian Splatting 렌더링** — `@mkkellogg/gaussian-splats-3d`로 RECON에 실제 스플랫을 얹음 (현재는 **공개 샘플**을 런타임 로드하는 테스트 에셋)
+- ✅ E2E 4종 (페이지별 런타임 + WebRTC 연결·스트리밍·탐지 사이클 + 실사 스플랫 로드)
 
 **후순위 / 다음 단계**
-- ⏳ **실사 텍스처** — 현재 3D는 절차적 placeholder 포인트클라우드입니다. 실제 `.ply`/`.splat` Gaussian Splatting 에셋 로더 연결 예정
-- ⏳ reveal을 청크 방식 → 거리 기반 셰이더로 고도화 ([PROJECT.md §5.2](PROJECT.md))
+- ⏳ **자체 촬영 스플랫으로 교체** — 지금 스플랫은 공개 샘플(테스트용)입니다. [PROJECT.md §2](PROJECT.md)대로 현장 촬영→GLOMAP/gsplat으로 만든 `.ply`/`.splat`으로 교체 + 씬 정합(transform) 튜닝
+- ⏳ reveal을 절차적 포인트클라우드 → 실사 스플랫 자체에 적용(셰이더 마스크)하도록 고도화 ([PROJECT.md §5.2](PROJECT.md))
 - ⏳ 최종 평가: 실제 드론 텔레메트리 · KOREN · Core HPC 파이프라인 연동
 
 ---
 
 ## 기술 스택
 
-**Three.js** (3D 렌더링) · **TypeScript** · **Vite** (멀티페이지 번들·개발 서버) · **PeerJS / WebRTC** (P2P 동기화) · **Playwright** (E2E 테스트)
+**Three.js** (3D 렌더링) · **@mkkellogg/gaussian-splats-3d** (실사 스플랫) · **TypeScript** · **Vite** (멀티페이지 번들·개발 서버) · **PeerJS / WebRTC** (P2P 동기화) · **Playwright** (E2E 테스트)
 
 <div align="center">
 <sub>SkyLens — 재난 현장을 실시간 3D로, 그 위에 AI를 얹다.</sub>
