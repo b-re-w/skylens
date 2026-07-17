@@ -15,6 +15,8 @@ import { state, emit } from '../core/store';
 import { CONFIG } from '../core/config';
 import { RevealField } from './reveal.ts';
 import { CameraSync } from './cameraSync.ts';
+import { SplatScene } from './splatScene.ts';
+import type { SplatOptions, SplatStatus } from './splatScene.ts';
 
 const POINT_VERT = /* glsl */ `
   attribute float aReveal;
@@ -64,6 +66,7 @@ export class ReconViewer {
   private readonly reveal: RevealField;
   private readonly camSync = new CameraSync();
   private readonly markers: MarkerVisual[] = [];
+  private splat: SplatScene | null = null;
 
   constructor(canvas: HTMLCanvasElement, sceneData: SceneData) {
     this.canvas = canvas;
@@ -191,6 +194,24 @@ export class ReconViewer {
     this.renderer.render(this.scene, this.camera);
   }
 
+  /**
+   * Attach the real Gaussian splat layer (TEST asset). Fit into the same frame
+   * as the procedural cloud so reveal/markers/camera stay aligned. Idempotent.
+   */
+  loadSplat(opts: SplatOptions): void {
+    if (this.splat) return;
+    this.splat = new SplatScene(this.scene);
+    this.splat.load(opts);
+  }
+
+  get splatStatus(): SplatStatus {
+    return this.splat?.status ?? 'idle';
+  }
+
+  get splatProgress(): number {
+    return this.splat?.progress ?? 0;
+  }
+
   resize(): void {
     const w = this.canvas.clientWidth || 1;
     const h = this.canvas.clientHeight || 1;
@@ -200,6 +221,7 @@ export class ReconViewer {
   }
 
   dispose(): void {
+    this.splat?.dispose();
     this.pointGeom.dispose();
     (this.points.material as THREE.Material).dispose();
     for (const m of this.markers) {

@@ -41,6 +41,23 @@ export const CONFIG = {
     syncLerp: 0.08,
   },
 
+  // Real Gaussian-splat asset for the RECON viewer (TEST asset).
+  // Loaded at runtime from a public CDN — NOT committed to the repo. The
+  // transform roughly fits the sample into the procedural scene frame; it is
+  // meant to be tuned on first real view (the splat's bounds aren't known until
+  // it loads). Swap `url` for your own capture later.
+  splat: {
+    enabled: true,
+    url: 'https://huggingface.co/cakewalk/splat-data/resolve/main/train.splat',
+    /** Lighter alternative used by e2e tests (8.6 MB vs 32.8 MB). */
+    urlLight: 'https://huggingface.co/cakewalk/splat-data/resolve/main/nike.splat',
+    position: [0, 4, 0] as [number, number, number],
+    /** Quaternion. antimatter15 .splat data reads upside-down in three.js, so
+     *  this flips 180° about X to stand it upright. Tune as needed. */
+    rotation: [1, 0, 0, 0] as [number, number, number, number],
+    scale: [8, 8, 8] as [number, number, number],
+  },
+
   // Palette — viewer 1 is deliberately low-fi / cold; viewer 2 warmer/real.
   color: {
     simBg: 0x0a1128,

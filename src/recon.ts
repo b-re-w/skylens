@@ -9,8 +9,10 @@
 
 import './style.css';
 import { state } from './core/store.ts';
+import { CONFIG } from './core/config.ts';
 import { buildSceneData } from './data/sceneData.ts';
 import { ReconViewer } from './viewer2/reconViewer.ts';
+import type { SplatOptions } from './viewer2/splatScene.ts';
 import { initUI } from './ui/overlay.ts';
 import { createTransport } from './net/peer.ts';
 import { applyState } from './net/protocol.ts';
@@ -23,9 +25,39 @@ function getCanvas(id: string): HTMLCanvasElement {
   return el;
 }
 
+/**
+ * Resolve the real-splat option from the URL:
+ *   ?splat=off            → disable (fast, point-cloud only)
+ *   ?splat=light | nike   → the lighter 8.6 MB sample
+ *   ?splat=<http…>        → a custom splat URL
+ *   (absent)              → the default sample
+ */
+function resolveSplat(): SplatOptions | null {
+  const base: SplatOptions = {
+    url: CONFIG.splat.url,
+    position: [...CONFIG.splat.position],
+    rotation: [...CONFIG.splat.rotation],
+    scale: [...CONFIG.splat.scale],
+  };
+  if (!CONFIG.splat.enabled) return null;
+  const q = new URLSearchParams(window.location.search).get('splat');
+  if (!q) return base;
+  if (q === 'off') return null;
+  if (q === 'light' || q === 'nike') return { ...base, url: CONFIG.splat.urlLight };
+  if (/^https?:\/\//.test(q)) return { ...base, url: q };
+  return base;
+}
+
 const scene = buildSceneData();
 const recon = new ReconViewer(getCanvas('view2'), scene);
 const ui = initUI();
+
+// Attach the real Gaussian splat (test asset) unless disabled.
+const splatOpts = resolveSplat();
+if (splatOpts) {
+  recon.loadSplat(splatOpts);
+  mountSplatLoading();
+}
 
 const transport = createTransport('recon', roomFromQuery());
 mountNetBadge(transport, 'recon');
@@ -56,10 +88,44 @@ function frame(now: number): void {
 }
 requestAnimationFrame(frame);
 
+// A small badge showing splat download/build progress until the scene is ready.
+function mountSplatLoading(): void {
+  const host = document.getElementById('overlay-recon');
+  if (!host) return;
+  const el = document.createElement('div');
+  el.className = 'splat-loading';
+  host.appendChild(el);
+
+  let lastText = '';
+  const tick = (): void => {
+    const s = recon.splatStatus;
+    let text = '';
+    if (s === 'loading') text = `실사 3D 복원 데이터 로딩… ${Math.round(recon.splatProgress)}%`;
+    else if (s === 'error') text = '실사 3D 로드 실패 — 포인트클라우드로 진행';
+    // 'ready'/'idle' → hide.
+    if (text !== lastText) {
+      lastText = text;
+      el.textContent = text;
+      el.classList.toggle('is-visible', text !== '');
+    }
+    if (s === 'loading' || s === 'idle') requestAnimationFrame(tick);
+    else if (s === 'error') setTimeout(() => el.classList.remove('is-visible'), 4000);
+  };
+  requestAnimationFrame(tick);
+}
+
 // Debug/e2e handle.
 (window as unknown as { skylens?: unknown }).skylens = {
   role: 'recon',
   state,
   scene,
   transport,
+  splat: {
+    get status() {
+      return recon.splatStatus;
+    },
+    get progress() {
+      return recon.splatProgress;
+    },
+  },
 };
