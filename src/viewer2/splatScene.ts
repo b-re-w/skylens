@@ -46,6 +46,11 @@ export class SplatScene {
     return this._status;
   }
 
+  /** The splat mesh's ShaderMaterial once loaded, else null. */
+  get material(): THREE.ShaderMaterial | null {
+    return this.viewer.splatMesh?.material ?? null;
+  }
+
   /** Download progress percent (0..100). */
   get progress(): number {
     return this._progress;

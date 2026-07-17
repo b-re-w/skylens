@@ -29,6 +29,8 @@ declare module '@mkkellogg/gaussian-splats-3d' {
     addSplatScene(path: string, options?: AddSplatSceneOptions): Promise<void>;
     getSceneCount(): number;
     dispose(): Promise<void> | void;
+    /** The mesh rendering the splats (present after a scene loads). */
+    splatMesh: { material: import('three').ShaderMaterial } | null;
   }
 
   export class Viewer {

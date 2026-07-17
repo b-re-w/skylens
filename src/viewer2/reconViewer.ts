@@ -13,6 +13,7 @@ import type { Detection, DetectionRuntime } from '../core/types';
 import { state, emit } from '../core/store';
 import { CONFIG } from '../core/config';
 import { RevealField } from './reveal.ts';
+import { SplatReveal } from './splatReveal.ts';
 import { CameraSync } from './cameraSync.ts';
 import { SplatScene } from './splatScene.ts';
 import type { SplatOptions, SplatStatus } from './splatScene.ts';
@@ -62,12 +63,21 @@ export class ReconViewer {
   private readonly points: THREE.Points;
   private readonly pointGeom: THREE.BufferGeometry;
   private readonly revealAttr: THREE.BufferAttribute;
-  private readonly reveal: RevealField;
+  // Reveal is driven on the point cloud (fallback) OR on the splat itself
+  // (photorealistic mode, via a coverage texture + patched splat shader).
+  private readonly reveal: RevealField | null;
+  private readonly splatReveal: SplatReveal | null;
+  private splatAttached = false;
   private readonly camSync = new CameraSync();
   private readonly markers: MarkerVisual[] = [];
   private splat: SplatScene | null = null;
 
-  constructor(canvas: HTMLCanvasElement, sceneData: SceneData, detections: Detection[]) {
+  constructor(
+    canvas: HTMLCanvasElement,
+    sceneData: SceneData,
+    detections: Detection[],
+    useSplat: boolean,
+  ) {
     this.canvas = canvas;
 
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
@@ -101,9 +111,18 @@ export class ReconViewer {
       depthWrite: false,
     });
     this.points = new THREE.Points(this.pointGeom, material);
-    this.scene.add(this.points);
 
-    this.reveal = new RevealField(sceneData.positions, sceneData.count);
+    if (useSplat) {
+      // RECON is photorealistic: the splat itself reveals. The point cloud is
+      // NOT shown — it's the SIM's representation.
+      this.reveal = null;
+      this.splatReveal = new SplatReveal(sceneData.bounds);
+    } else {
+      // No splat (disabled/failed): show the point cloud and reveal on it.
+      this.scene.add(this.points);
+      this.reveal = new RevealField(sceneData.positions, sceneData.count);
+      this.splatReveal = null;
+    }
 
     // Initialize shared detection state on first construction (state owner).
     if (state.detections.length === 0) {
@@ -155,19 +174,36 @@ export class ReconViewer {
   update(dt: number): void {
     const now = state.time;
 
-    // Lag the visited trail before feeding the reveal field (§5.2).
+    // Lag the visited trail before feeding the reveal (§5.2).
     const cutoff = now - CONFIG.sim.revealLagSeconds;
     const lagged = state.visited.filter((v) => v.t <= cutoff);
-    const dirty = this.reveal.update(lagged, now, dt);
-    if (dirty) {
-      (this.revealAttr.array as Float32Array).set(this.reveal.progress);
-      this.revealAttr.needsUpdate = true;
+
+    // Patch the splat shader once its material exists (photorealistic reveal).
+    if (this.splatReveal && this.splat && !this.splatAttached) {
+      const mat = this.splat.material;
+      if (mat) {
+        this.splatReveal.attachTo(mat);
+        this.splatAttached = true;
+      }
     }
+
+    if (this.splatReveal) {
+      this.splatReveal.update(lagged, dt);
+    } else if (this.reveal) {
+      const dirty = this.reveal.update(lagged, now, dt);
+      if (dirty) {
+        (this.revealAttr.array as Float32Array).set(this.reveal.progress);
+        this.revealAttr.needsUpdate = true;
+      }
+    }
+
+    const isRevealed = (pos: [number, number, number]): boolean =>
+      this.splatReveal ? this.splatReveal.isAreaRevealed(pos) : !!this.reveal?.isAreaRevealed(pos);
 
     // Detection reveal + marker visibility.
     for (const m of this.markers) {
       if (!m.det.revealed) {
-        if (this.reveal.isAreaRevealed(m.det.pos)) {
+        if (isRevealed(m.det.pos)) {
           m.det.revealed = true;
           m.det.revealedAt = now;
           emit({ type: 'detection-revealed', id: m.det.id });

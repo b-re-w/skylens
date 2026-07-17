@@ -37,7 +37,7 @@ async function main(): Promise<void> {
   loading.done();
 
   const detections = buildDetections(loaded.data);
-  const recon = new ReconViewer(getCanvas('view2'), loaded.data, detections);
+  const recon = new ReconViewer(getCanvas('view2'), loaded.data, detections, !!loaded.splat);
   const ui = initUI();
 
   // Render the full splat with the same transform the point cloud was fit with.
