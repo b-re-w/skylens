@@ -17,6 +17,9 @@ export const CONFIG = {
     radius: 6.0,
     /** Seconds for a freshly revealed chunk to fade 0 -> 1. */
     fadeSeconds: 1.2,
+    /** Opacity of not-yet-scanned splats (0 = fully hidden). Kept >0 so the
+     *  building is always faintly visible ("ghost") and brightens when scanned. */
+    ghostOpacity: 0.16,
   },
 
   // Drone path following / manual control (§4.2)

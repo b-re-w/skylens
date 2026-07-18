@@ -24,6 +24,7 @@ export class SplatReveal {
     uRevealTex: { value: THREE.Texture };
     uRevealMin: { value: THREE.Vector2 };
     uRevealSize: { value: THREE.Vector2 };
+    uRevealGhost: { value: number };
   };
 
   constructor(bounds: THREE.Box3) {
@@ -46,6 +47,7 @@ export class SplatReveal {
       uRevealTex: { value: this.tex },
       uRevealMin: { value: this.worldMin },
       uRevealSize: { value: this.worldSize },
+      uRevealGhost: { value: CONFIG.reveal.ghostOpacity },
     };
   }
 
@@ -117,6 +119,7 @@ export class SplatReveal {
       shader.uniforms.uRevealTex = this.uniforms.uRevealTex;
       shader.uniforms.uRevealMin = this.uniforms.uRevealMin;
       shader.uniforms.uRevealSize = this.uniforms.uRevealSize;
+      shader.uniforms.uRevealGhost = this.uniforms.uRevealGhost;
 
       // --- Vertex: sample coverage at the splat's world XZ into a varying. ---
       shader.vertexShader = shader.vertexShader
@@ -147,12 +150,16 @@ export class SplatReveal {
         .replace(
           'varying vec2 vPosition;',
           `varying vec2 vPosition;
-           varying float vReveal;`,
+           varying float vReveal;
+           uniform float uRevealGhost;`,
         )
         .replace(
           'gl_FragColor = vec4(color.rgb, opacity);',
-          `if (vReveal < 0.003) discard;
-           gl_FragColor = vec4(color.rgb, opacity * vReveal);`,
+          // Not-yet-scanned splats stay faintly visible (ghost); scanned splats
+          // fade up to full. So the building is always visible and brightens as
+          // drones scan it.
+          `float vis = mix(uRevealGhost, 1.0, clamp(vReveal, 0.0, 1.0));
+           gl_FragColor = vec4(color.rgb, opacity * vis);`,
         );
     };
     material.needsUpdate = true;
