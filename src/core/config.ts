@@ -48,11 +48,11 @@ export const CONFIG = {
   // sceneSource.ts). Swap `url` for your own capture later.
   splat: {
     enabled: true,
-    // A building interior (indoor room scan) so RECON reads as a structure — the
-    // disaster-site narrative. Public sample from the dylanebert/3dgs dataset.
-    url: 'https://huggingface.co/datasets/dylanebert/3dgs/resolve/main/room/room-7k.splat',
-    /** Lighter building scene used by e2e tests (counter, ~33 MB). */
-    urlLight: 'https://huggingface.co/datasets/dylanebert/3dgs/resolve/main/counter/counter-7k.splat',
+    // An OUTDOOR building exterior (the Colosseum — a ruined structure) so RECON
+    // reads as a disaster-site building. Public sample from the stpete2/splat set.
+    url: 'https://huggingface.co/datasets/stpete2/splat/resolve/main/colosseum_photo.splat',
+    /** Lighter outdoor building scene used by e2e tests (a church, ~8.6 MB). */
+    urlLight: 'https://huggingface.co/datasets/stpete2/splat/resolve/main/church.splat',
   },
 
   // Palette — viewer 1 is deliberately low-fi / cold; viewer 2 warmer/real.
