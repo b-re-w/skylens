@@ -40,6 +40,11 @@ async function main(): Promise<void> {
   const recon = new ReconViewer(getCanvas('view2'), loaded.data, detections, !!loaded.splat);
   const ui = initUI();
 
+  // ?reveal=on|off overrides the splat reveal MASK (default from CONFIG.reveal.splatMask).
+  const revealQ = new URLSearchParams(window.location.search).get('reveal');
+  if (revealQ === 'on') recon.setSplatMask(true);
+  else if (revealQ === 'off') recon.setSplatMask(false);
+
   // Render the full splat with the same transform the point cloud was fit with.
   // (Re-downloads the same URL, served from browser cache — see sceneSource.ts.)
   if (loaded.splat) {

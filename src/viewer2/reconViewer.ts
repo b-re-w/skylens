@@ -68,6 +68,7 @@ export class ReconViewer {
   private readonly reveal: RevealField | null;
   private readonly splatReveal: SplatReveal | null;
   private splatAttached = false;
+  private splatMaskEnabled: boolean = CONFIG.reveal.splatMask;
   private readonly camSync = new CameraSync();
   private readonly markers: MarkerVisual[] = [];
   private splat: SplatScene | null = null;
@@ -179,7 +180,7 @@ export class ReconViewer {
     const lagged = state.visited.filter((v) => v.t <= cutoff);
 
     // Patch the splat shader once its material exists (photorealistic reveal).
-    if (this.splatReveal && this.splat && !this.splatAttached) {
+    if (this.splatMaskEnabled && this.splatReveal && this.splat && !this.splatAttached) {
       const mat = this.splat.material;
       if (mat) {
         this.splatReveal.attachTo(mat);
@@ -237,6 +238,11 @@ export class ReconViewer {
     if (this.splat) return;
     this.splat = new SplatScene(this.scene);
     this.splat.load(opts);
+  }
+
+  /** Toggle the splat reveal mask. When off, the full splat renders regardless. */
+  setSplatMask(enabled: boolean): void {
+    this.splatMaskEnabled = enabled;
   }
 
   get splatStatus(): SplatStatus {
