@@ -69,7 +69,7 @@ export class ReconViewer {
   private readonly splatReveal: SplatReveal | null;
   private splatAttached = false;
   private splatMaskEnabled: boolean = CONFIG.reveal.splatMask;
-  private readonly camSync = new CameraSync();
+  private readonly camSync: CameraSync;
   private readonly markers: MarkerVisual[] = [];
   private splat: SplatScene | null = null;
 
@@ -80,6 +80,7 @@ export class ReconViewer {
     useSplat: boolean,
   ) {
     this.canvas = canvas;
+    this.camSync = new CameraSync(sceneData.bounds);
 
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
     this.renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
@@ -222,7 +223,7 @@ export class ReconViewer {
     }
 
     // Camera state machine (§8.3).
-    this.camSync.step(dt, now, state.detections);
+    this.camSync.step(dt, state.detections);
     const pose = this.camSync.getPose();
     this.camera.position.copy(pose.pos);
     this.camera.lookAt(pose.target);

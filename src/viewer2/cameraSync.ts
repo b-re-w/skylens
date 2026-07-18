@@ -1,141 +1,123 @@
-// Camera sync state machine for viewer 2 (§8.3): SYNCED -> FOCUSING -> LOCKED
-// -> RETURNING -> SYNCED. Drives the recon camera's position/target each
-// frame; the ReconViewer just calls step(camera, dt) and applies whatever
-// pose comes out. Reads/writes shared store state so the UI (overlay.ts) can
-// interoperate purely through `state.cameraSync` / `state.focusedDetectionId`
-// and the {type:'detection-confirmed'} event.
+// Camera state machine for viewer 2 (§8.3): SYNCED -> FOCUSING -> LOCKED ->
+// RETURNING -> SYNCED. The ReconViewer calls step() and applies getPose().
+//
+// SYNCED is a slow OVERVIEW ORBIT around the whole reconstructed scene, framed
+// from outside so the building is clearly visible as a 3D object (RECON has no
+// drone model to chase). On a detection it tweens in to focus, holds until the
+// operator confirms, then tweens back to the orbit. Drives shared store state so
+// the UI interoperates purely through state.cameraSync / focusedDetectionId.
 
 import * as THREE from 'three';
-import type { DetectionRuntime, DroneRuntime } from '../core/types';
+import type { DetectionRuntime } from '../core/types';
 import { state, emit, setCameraState } from '../core/store';
 import { CONFIG } from '../core/config';
-import { easeInOut, dampFactor, toVector3 } from '../core/math';
+import { easeInOut, toVector3 } from '../core/math';
 
-interface PoseSample {
-  t: number;
-  pos: THREE.Vector3;
-  forward: THREE.Vector3;
-}
-
-const RING_MAX = 240; // ~4s of history at 60fps, plenty for a few-second lag
+const ORBIT_SPEED = 0.12; // rad/s
 
 export class CameraSync {
   private readonly camPos = new THREE.Vector3();
   private readonly camTarget = new THREE.Vector3();
+
+  private readonly center = new THREE.Vector3();
+  private readonly dist: number;
+  private readonly elevation: number;
+  private angle = Math.PI * 0.25;
   private initialized = false;
 
-  /** Ring buffer of the active drone's recent pose, for the lagged SYNCED follow. */
-  private readonly history: PoseSample[] = [];
-
-  // Tween bookkeeping for FOCUSING / RETURNING.
-  private tweenStart = 0;
+  // Tween bookkeeping for FOCUSING / RETURNING. Timed in REAL seconds (dt), not
+  // the sim clock, so camera animation plays at a consistent speed regardless of
+  // sim playback speed or a throttled/paused sim.
+  private tweenElapsed = 0;
   private tweenFrom = { pos: new THREE.Vector3(), target: new THREE.Vector3() };
   private tweenTo = { pos: new THREE.Vector3(), target: new THREE.Vector3() };
 
-  /** Current camera position/target for the ReconViewer to apply. */
+  constructor(bounds: THREE.Box3) {
+    bounds.getCenter(this.center);
+    const sphere = new THREE.Sphere();
+    bounds.getBoundingSphere(sphere);
+    const radius = Math.max(1, sphere.radius);
+    // Distance to fit the sphere in a ~50° vertical FOV, with headroom.
+    this.dist = radius * 2.4;
+    this.elevation = this.dist * 0.35;
+  }
+
   getPose(): { pos: THREE.Vector3; target: THREE.Vector3 } {
     return { pos: this.camPos, target: this.camTarget };
   }
 
-  /**
-   * Advance the state machine and camera pose by dt seconds.
-   * `detections` lets FOCUSING/LOCKED look up the focused detection's position.
-   */
-  step(dt: number, now: number, detections: DetectionRuntime[]): void {
-    const active = state.drones.find((d) => d.id === state.activeDroneId) ?? state.drones[0];
-    if (active) this.recordHistory(active, now);
+  /** Overview-orbit pose at the current angle. */
+  private orbitPose(): { pos: THREE.Vector3; target: THREE.Vector3 } {
+    const pos = new THREE.Vector3(
+      this.center.x + Math.cos(this.angle) * this.dist,
+      this.center.y + this.elevation,
+      this.center.z + Math.sin(this.angle) * this.dist,
+    );
+    return { pos, target: this.center.clone() };
+  }
 
-    const lagged = this.laggedPose(now);
-
-    // State-driven confirmation: once the operator acknowledges the focused
-    // detection (overlay sets confirmed=true + emits detection-confirmed), the
-    // camera returns. Reading the flag rather than consuming a one-shot event
-    // means a confirmation can never be dropped by an unlucky sub-state.
+  step(dt: number, detections: DetectionRuntime[]): void {
+    // State-driven confirmation: once the focused detection is acknowledged
+    // (overlay sets confirmed=true), the camera returns. Reading the flag rather
+    // than a one-shot event means a confirmation can't be dropped.
     if (
       state.focusedDetectionId !== null &&
       (state.cameraSync === 'LOCKED' || state.cameraSync === 'FOCUSING')
     ) {
       const det = detections.find((d) => d.id === state.focusedDetectionId);
-      if (det && det.confirmed) {
-        this.beginReturning(lagged);
-      }
+      if (det && det.confirmed) this.beginReturning();
     }
 
     switch (state.cameraSync) {
       case 'SYNCED':
-        this.stepSynced(lagged, dt);
+        this.stepSynced(dt);
         break;
       case 'FOCUSING':
-        this.stepTween(now, () => setCameraState('LOCKED'));
+        this.stepTween(dt, () => setCameraState('LOCKED'));
         break;
       case 'LOCKED':
-        // Hold on the focused detection; keep target/pos fixed at tween end.
-        break;
+        break; // hold on the detection
       case 'RETURNING':
-        this.stepTween(now, () => {
+        this.stepTween(dt, () => {
           state.focusedDetectionId = null;
           setCameraState('SYNCED');
         });
         break;
     }
 
-    // Trigger a new focus if something just became revealed and nothing's focused.
+    // Trigger a focus when something newly revealed and nothing is focused.
     if (state.cameraSync === 'SYNCED' && state.focusedDetectionId === null) {
       const candidate = detections.find((d) => d.revealed && !d.confirmed);
       if (candidate) {
         state.focusedDetectionId = candidate.id;
-        this.beginFocusing(candidate, now);
+        this.beginFocusing(candidate);
         emit({ type: 'detection-focused', id: candidate.id });
       }
     }
   }
 
-  private recordHistory(drone: DroneRuntime, now: number): void {
-    this.history.push({ t: now, pos: drone.pos.clone(), forward: drone.forward.clone() });
-    if (this.history.length > RING_MAX) this.history.shift();
+  private stepSynced(dt: number): void {
+    // Angle only advances in SYNCED, so a RETURN lands exactly where the orbit
+    // resumes (no jump).
+    this.angle += ORBIT_SPEED * dt;
+    const pose = this.orbitPose();
+    this.camPos.copy(pose.pos);
+    this.camTarget.copy(pose.target);
+    this.initialized = true;
   }
 
-  /** Situation-board framing offset behind/above a drone pose. */
-  private framePose(pos: THREE.Vector3, forward: THREE.Vector3): { pos: THREE.Vector3; target: THREE.Vector3 } {
-    const behind = forward.clone().multiplyScalar(-10);
-    const camPos = pos.clone().add(behind).add(new THREE.Vector3(0, 7, 0));
-    return { pos: camPos, target: pos.clone() };
-  }
-
-  /** Pose from ~revealLagSeconds ago in the drone history (or oldest/newest available). */
-  private laggedPose(now: number): { pos: THREE.Vector3; target: THREE.Vector3 } {
-    if (this.history.length === 0) {
-      return { pos: new THREE.Vector3(0, 20, 30), target: new THREE.Vector3(0, 0, 0) };
-    }
-    const targetT = now - CONFIG.sim.revealLagSeconds;
-    let sample = this.history[0];
-    for (const s of this.history) {
-      if (s.t <= targetT) sample = s;
-      else break;
-    }
-    return this.framePose(sample.pos, sample.forward);
-  }
-
-  private stepSynced(lagged: { pos: THREE.Vector3; target: THREE.Vector3 }, dt: number): void {
+  private beginFocusing(det: DetectionRuntime): void {
     if (!this.initialized) {
-      this.camPos.copy(lagged.pos);
-      this.camTarget.copy(lagged.target);
+      const pose = this.orbitPose();
+      this.camPos.copy(pose.pos);
+      this.camTarget.copy(pose.target);
       this.initialized = true;
-      return;
     }
-    // syncLerp is specified as a per-frame factor at 60fps; convert to a
-    // continuous damping rate so the follow feels the same at any frame rate.
-    const rate = -Math.log(1 - Math.min(0.999, CONFIG.camera.syncLerp)) * 60;
-    const alpha = dampFactor(rate, dt);
-    this.camPos.lerp(lagged.pos, alpha);
-    this.camTarget.lerp(lagged.target, alpha);
-  }
-
-  private beginFocusing(det: DetectionRuntime, now: number): void {
     this.tweenFrom.pos.copy(this.camPos);
     this.tweenFrom.target.copy(this.camTarget);
 
     const detPos = toVector3(det.pos);
+    // Approach from the current orbit direction so the detection isn't occluded.
     const dir = detPos.clone().sub(this.camPos);
     if (dir.lengthSq() < 1e-6) dir.set(0, 0, 1);
     dir.normalize();
@@ -144,21 +126,23 @@ export class CameraSync {
 
     this.tweenTo.pos.copy(camPos);
     this.tweenTo.target.copy(detPos);
-    this.tweenStart = now;
+    this.tweenElapsed = 0;
     setCameraState('FOCUSING');
   }
 
-  private beginReturning(lagged: { pos: THREE.Vector3; target: THREE.Vector3 }): void {
+  private beginReturning(): void {
     this.tweenFrom.pos.copy(this.camPos);
     this.tweenFrom.target.copy(this.camTarget);
-    this.tweenTo.pos.copy(lagged.pos);
-    this.tweenTo.target.copy(lagged.target);
-    this.tweenStart = state.time;
+    const pose = this.orbitPose(); // angle is frozen during focus -> resume point
+    this.tweenTo.pos.copy(pose.pos);
+    this.tweenTo.target.copy(pose.target);
+    this.tweenElapsed = 0;
     setCameraState('RETURNING');
   }
 
-  private stepTween(now: number, onDone: () => void): void {
-    const t = (now - this.tweenStart) / Math.max(1e-6, CONFIG.camera.tweenSeconds);
+  private stepTween(dt: number, onDone: () => void): void {
+    this.tweenElapsed += dt;
+    const t = this.tweenElapsed / Math.max(1e-6, CONFIG.camera.tweenSeconds);
     const e = easeInOut(t);
     this.camPos.lerpVectors(this.tweenFrom.pos, this.tweenTo.pos, e);
     this.camTarget.lerpVectors(this.tweenFrom.target, this.tweenTo.target, e);

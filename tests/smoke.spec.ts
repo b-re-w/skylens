@@ -246,6 +246,9 @@ test.describe('WebRTC integration (SIM <-> RECON)', () => {
     await sim.evaluate(() => {
       window.skylens.CONFIG!.sim.speed = 1;
     });
+    // RECON must be foreground so its render loop (rAF) runs — a backgrounded
+    // page throttles/pauses rAF and the camera tween would freeze mid-return.
+    await recon.bringToFront();
     await expect
       .poll(() => recon.evaluate(() => window.skylens.state.cameraSync), {
         timeout: 15_000,
