@@ -8,6 +8,7 @@
 // reveal/camera choreography and coordinate frame are real and swappable.
 
 import * as THREE from 'three';
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import type { SceneData } from '../data/sceneData';
 import type { Detection, DetectionRuntime } from '../core/types';
 import { state, emit } from '../core/store';
@@ -73,6 +74,11 @@ export class ReconViewer {
   private readonly markers: MarkerVisual[] = [];
   private splat: SplatScene | null = null;
 
+  // Free-orbit navigation of the reconstructed space.
+  private readonly controls: OrbitControls;
+  private readonly sceneCenter = new THREE.Vector3();
+  private readonly desiredTarget = new THREE.Vector3();
+
   constructor(
     canvas: HTMLCanvasElement,
     sceneData: SceneData,
@@ -86,15 +92,39 @@ export class ReconViewer {
     this.renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
 
     this.scene.background = new THREE.Color(CONFIG.color.reconBg);
-    this.scene.fog = new THREE.Fog(CONFIG.color.reconBg, 20, 90);
     // Subtle warm-neutral fill so the "real" reconstruction reads photographic.
     this.scene.add(new THREE.AmbientLight(0xffe8cf, 0.35));
     const key = new THREE.DirectionalLight(0xfff1d8, 0.5);
     key.position.set(10, 20, 8);
     this.scene.add(key);
 
+    // Frame the reconstructed scene from its robust bounds.
+    const sphere = new THREE.Sphere();
+    sceneData.bounds.getBoundingSphere(sphere);
+    this.sceneCenter.copy(sphere.center);
+    const radius = Math.max(1, sphere.radius);
+    this.scene.fog = new THREE.Fog(CONFIG.color.reconBg, radius * 2, radius * 6);
+
     const aspect = canvas.clientWidth / Math.max(1, canvas.clientHeight);
-    this.camera = new THREE.PerspectiveCamera(50, aspect, 0.1, 500);
+    this.camera = new THREE.PerspectiveCamera(50, aspect, 0.05, radius * 20);
+    const dist = radius * 2.4;
+    this.camera.position.set(
+      this.sceneCenter.x + dist * 0.75,
+      this.sceneCenter.y + dist * 0.5,
+      this.sceneCenter.z + dist * 0.75,
+    );
+
+    // Free-orbit controls: drag to look around the space, wheel to zoom.
+    this.controls = new OrbitControls(this.camera, canvas);
+    this.controls.target.copy(this.sceneCenter);
+    this.controls.enableDamping = true;
+    this.controls.dampingFactor = 0.08;
+    this.controls.autoRotate = true;
+    this.controls.autoRotateSpeed = 0.5;
+    this.controls.minDistance = radius * 0.3;
+    this.controls.maxDistance = radius * 8;
+    this.controls.update();
+    this.desiredTarget.copy(this.sceneCenter);
 
     // Full point cloud with a per-point aReveal attribute we drive over time.
     this.pointGeom = new THREE.BufferGeometry();
@@ -223,10 +253,24 @@ export class ReconViewer {
     }
 
     // Camera state machine (§8.3).
+    // Detection state machine (focus card / confirm / reveal triggers).
     this.camSync.step(dt, state.detections);
-    const pose = this.camSync.getPose();
-    this.camera.position.copy(pose.pos);
-    this.camera.lookAt(pose.target);
+
+    // Free-orbit camera: gently aim at a focused detection, else the scene
+    // center; auto-rotate only when not focused. The user can drag/zoom anytime.
+    const focused =
+      state.cameraSync === 'FOCUSING' || state.cameraSync === 'LOCKED'
+        ? this.markers.find((m) => m.det.id === state.focusedDetectionId)
+        : undefined;
+    if (focused) {
+      this.desiredTarget.set(focused.det.pos[0], focused.det.pos[1], focused.det.pos[2]);
+      this.controls.autoRotate = false;
+    } else {
+      this.desiredTarget.copy(this.sceneCenter);
+      this.controls.autoRotate = true;
+    }
+    this.controls.target.lerp(this.desiredTarget, 1 - Math.exp(-3 * dt));
+    this.controls.update();
 
     this.renderer.render(this.scene, this.camera);
   }
@@ -263,6 +307,7 @@ export class ReconViewer {
   }
 
   dispose(): void {
+    this.controls.dispose();
     this.splat?.dispose();
     this.pointGeom.dispose();
     (this.points.material as THREE.Material).dispose();

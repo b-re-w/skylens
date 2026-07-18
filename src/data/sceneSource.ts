@@ -85,6 +85,13 @@ function fallback(): LoadedScene {
   return { data: buildSceneData(), splat: null };
 }
 
+/** Percentile of a sorted ascending array. */
+function pct(sorted: number[], q: number): number {
+  if (sorted.length === 0) return 0;
+  const i = Math.min(sorted.length - 1, Math.max(0, Math.round(q * (sorted.length - 1))));
+  return sorted[i];
+}
+
 function deriveFromSplat(
   buffer: import('@mkkellogg/gaussian-splats-3d').SplatBuffer,
   url: string,
@@ -94,32 +101,50 @@ function deriveFromSplat(
 
   const c = new THREE.Vector3();
 
-  // Pass 1: bounds of the UPRIGHT-rotated raw centers (pre-scale/translate).
-  const rotMin = new THREE.Vector3(Infinity, Infinity, Infinity);
-  const rotMax = new THREE.Vector3(-Infinity, -Infinity, -Infinity);
-  // Stride the first pass for speed on huge clouds; bounds barely change.
-  const boundsStride = Math.max(1, Math.floor(total / 200_000));
-  for (let i = 0; i < total; i += boundsStride) {
+  // --- ROBUST bounds (UPRIGHT-rotated frame) ---
+  // Photo/SfM splats carry lots of outlier "floater" gaussians far from the real
+  // structure. Naive min/max is dominated by them, so we fit to robust
+  // percentile bounds instead — the building, not the noise, sets the scale.
+  const sampleStride = Math.max(1, Math.floor(total / 60_000));
+  const xs: number[] = [];
+  const ys: number[] = [];
+  const zs: number[] = [];
+  for (let i = 0; i < total; i += sampleStride) {
     buffer.getSplatCenter(i, c);
     c.applyQuaternion(UPRIGHT);
-    rotMin.min(c);
-    rotMax.max(c);
+    xs.push(c.x);
+    ys.push(c.y);
+    zs.push(c.z);
   }
+  xs.sort((a, b) => a - b);
+  ys.sort((a, b) => a - b);
+  zs.sort((a, b) => a - b);
 
-  const size = new THREE.Vector3().subVectors(rotMax, rotMin);
+  const LO = 0.02;
+  const HI = 0.98;
+  const rMin = new THREE.Vector3(pct(xs, LO), pct(ys, LO), pct(zs, LO));
+  const rMax = new THREE.Vector3(pct(xs, HI), pct(ys, HI), pct(zs, HI));
+  const size = new THREE.Vector3().subVectors(rMax, rMin);
   const maxDim = Math.max(size.x, size.y, size.z) || 1;
   const s = TARGET_EXTENT / maxDim;
 
-  const rotCenter = new THREE.Vector3().addVectors(rotMin, rotMax).multiplyScalar(0.5);
-  // world = s*(R*raw) + P ; choose P to center XZ at origin and floor Y at 0.
-  const P = new THREE.Vector3(-s * rotCenter.x, -s * rotMin.y, -s * rotCenter.z);
+  const rCenter = new THREE.Vector3().addVectors(rMin, rMax).multiplyScalar(0.5);
+  // world = s*(R*raw) + P ; center XZ at origin, floor the robust bottom at y=0.
+  const P = new THREE.Vector3(-s * rCenter.x, -s * rMin.y, -s * rCenter.z);
 
-  // Pass 2: build the downsampled world-space cloud.
+  // Keep points a bit beyond the robust box so the structure isn't clipped, but
+  // drop far floaters. Margin in rotated (pre-scale) units.
+  const margin = maxDim * 0.15;
+  const clipMin = rMin.clone().subScalar(margin);
+  const clipMax = rMax.clone().addScalar(margin);
+
+  // --- Build the downsampled, clipped world-space cloud ---
   const stride = Math.max(1, Math.floor(total / TARGET_POINTS));
-  const kept = Math.ceil(total / stride);
-  const positions = new Float32Array(kept * 3);
-  const colors = new Float32Array(kept * 3);
+  const cap = Math.ceil(total / stride);
+  const positions = new Float32Array(cap * 3);
+  const colors = new Float32Array(cap * 3);
   const col = new THREE.Vector4();
+  const rot = new THREE.Vector3();
   const bounds = new THREE.Box3(
     new THREE.Vector3(Infinity, Infinity, Infinity),
     new THREE.Vector3(-Infinity, -Infinity, -Infinity),
@@ -127,8 +152,17 @@ function deriveFromSplat(
 
   let j = 0;
   for (let i = 0; i < total; i += stride) {
-    buffer.getSplatCenter(i, c);
-    c.applyQuaternion(UPRIGHT).multiplyScalar(s).add(P);
+    buffer.getSplatCenter(i, rot);
+    rot.applyQuaternion(UPRIGHT);
+    // Reject floaters outside the robust box (+margin).
+    if (
+      rot.x < clipMin.x || rot.x > clipMax.x ||
+      rot.y < clipMin.y || rot.y > clipMax.y ||
+      rot.z < clipMin.z || rot.z > clipMax.z
+    ) {
+      continue;
+    }
+    c.copy(rot).multiplyScalar(s).add(P);
     positions[j * 3] = c.x;
     positions[j * 3 + 1] = c.y;
     positions[j * 3 + 2] = c.z;
