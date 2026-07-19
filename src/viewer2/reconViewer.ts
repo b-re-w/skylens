@@ -78,6 +78,7 @@ export class ReconViewer {
   private readonly controls: OrbitControls;
   private readonly sceneCenter = new THREE.Vector3();
   private readonly desiredTarget = new THREE.Vector3();
+  private allowAutoRotate = true;
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -107,10 +108,10 @@ export class ReconViewer {
 
     const aspect = canvas.clientWidth / Math.max(1, canvas.clientHeight);
     this.camera = new THREE.PerspectiveCamera(50, aspect, 0.05, radius * 20);
-    const dist = radius * 2.4;
+    const dist = radius * 1.7;
     this.camera.position.set(
       this.sceneCenter.x + dist * 0.75,
-      this.sceneCenter.y + dist * 0.5,
+      this.sceneCenter.y + dist * 0.4,
       this.sceneCenter.z + dist * 0.75,
     );
 
@@ -121,6 +122,10 @@ export class ReconViewer {
     this.controls.dampingFactor = 0.08;
     this.controls.autoRotate = true;
     this.controls.autoRotateSpeed = 0.5;
+    if (typeof window !== 'undefined' &&
+        new URLSearchParams(window.location.search).get('spin') === 'off') {
+      this.allowAutoRotate = false;
+    }
     this.controls.minDistance = radius * 0.3;
     this.controls.maxDistance = radius * 8;
     this.controls.update();
@@ -211,10 +216,12 @@ export class ReconViewer {
     const lagged = state.visited.filter((v) => v.t <= cutoff);
 
     // Patch the splat shader once its material exists (photorealistic reveal).
-    if (this.splatMaskEnabled && this.splatReveal && this.splat && !this.splatAttached) {
+    // Always patch the splat shader (floater clip); the reveal mask is toggled.
+    if (this.splatReveal && this.splat && !this.splatAttached) {
       const mat = this.splat.material;
       if (mat) {
         this.splatReveal.attachTo(mat);
+        this.splatReveal.setRevealEnabled(this.splatMaskEnabled);
         this.splatAttached = true;
       }
     }
@@ -267,7 +274,7 @@ export class ReconViewer {
       this.controls.autoRotate = false;
     } else {
       this.desiredTarget.copy(this.sceneCenter);
-      this.controls.autoRotate = true;
+      this.controls.autoRotate = this.allowAutoRotate;
     }
     this.controls.target.lerp(this.desiredTarget, 1 - Math.exp(-3 * dt));
     this.controls.update();
@@ -288,6 +295,24 @@ export class ReconViewer {
   /** Toggle the splat reveal mask. When off, the full splat renders regardless. */
   setSplatMask(enabled: boolean): void {
     this.splatMaskEnabled = enabled;
+    this.splatReveal?.setRevealEnabled(enabled);
+  }
+
+  /** Debug: reveal the whole point cloud immediately (for ?render=points). */
+  revealAll(): void {
+    const arr = this.revealAttr.array as Float32Array;
+    arr.fill(1);
+    this.revealAttr.needsUpdate = true;
+  }
+
+  get debugInfo(): Record<string, unknown> {
+    return {
+      camPos: this.camera.position.toArray().map((n) => Math.round(n * 10) / 10),
+      target: this.controls.target.toArray().map((n) => Math.round(n * 10) / 10),
+      center: this.sceneCenter.toArray().map((n) => Math.round(n * 10) / 10),
+      camDist: Math.round(this.camera.position.distanceTo(this.sceneCenter) * 10) / 10,
+      splatAttached: this.splatAttached,
+    };
   }
 
   get splatStatus(): SplatStatus {

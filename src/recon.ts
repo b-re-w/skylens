@@ -36,8 +36,17 @@ async function main(): Promise<void> {
   });
   loading.done();
 
+  // Debug: ?render=points renders the extracted point cloud instead of the splat
+  // (to check the fit/camera independently of the splat renderer).
+  const renderPoints = new URLSearchParams(window.location.search).get('render') === 'points';
+
   const detections = buildDetections(loaded.data);
-  const recon = new ReconViewer(getCanvas('view2'), loaded.data, detections, !!loaded.splat);
+  const recon = new ReconViewer(
+    getCanvas('view2'),
+    loaded.data,
+    detections,
+    !!loaded.splat && !renderPoints,
+  );
   const ui = initUI();
 
   // ?reveal=on|off overrides the splat reveal MASK (default from CONFIG.reveal.splatMask).
@@ -45,9 +54,11 @@ async function main(): Promise<void> {
   if (revealQ === 'on') recon.setSplatMask(true);
   else if (revealQ === 'off') recon.setSplatMask(false);
 
-  // Render the full splat with the same transform the point cloud was fit with.
-  // (Re-downloads the same URL, served from browser cache — see sceneSource.ts.)
-  if (loaded.splat) {
+  if (renderPoints) {
+    recon.revealAll();
+  } else if (loaded.splat) {
+    // Render the full splat with the same transform the point cloud was fit with.
+    // (Re-downloads the same URL, served from browser cache — see sceneSource.ts.)
     recon.loadSplat(loaded.splat);
     mountSplatLoading(recon);
   }
@@ -92,6 +103,9 @@ async function main(): Promise<void> {
       get progress() {
         return recon.splatProgress;
       },
+    },
+    get dbg() {
+      return recon.debugInfo;
     },
   };
 }

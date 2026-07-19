@@ -1,9 +1,10 @@
-// Progressive reveal applied to the REAL splat itself (not a point overlay), so
-// RECON stays photorealistic. A top-down coverage texture over the scene's world
-// XZ bounds encodes reveal progress; a drone "scans" a disc into it as it passes.
-// The splat material's shader is patched (via onBeforeCompile) to sample that
-// coverage at each splat's world XZ and fade the splat in — unrevealed splats are
-// discarded, so the reconstruction blooms exactly where drones have flown.
+// Splat shader effects for RECON: (1) a floater CLIP that discards splats outside
+// the robust scene box — photo/SfM splats have lots of far background gaussians
+// that otherwise fog up the view — and (2) an optional progressive REVEAL mask
+// driven by a top-down coverage texture (drones "scan" the building in).
+//
+// Both are injected into the splat material's shader via onBeforeCompile. The
+// clip is always on; the reveal is toggled by a uniform.
 
 import * as THREE from 'three';
 import type { Visited } from '../core/types';
@@ -12,28 +13,37 @@ import { CONFIG } from '../core/config';
 const RES = 256;
 
 export class SplatReveal {
-  private readonly progress: Float32Array; // RES*RES reveal value [0,1]
-  private readonly started: Uint8Array; // texel has been scanned
+  private readonly progress: Float32Array;
+  private readonly started: Uint8Array;
   private readonly tex: THREE.DataTexture;
   private readonly worldMin = new THREE.Vector2();
   private readonly worldSize = new THREE.Vector2();
   private consumed = 0;
 
-  // Uniform holders shared with the patched material.
   private readonly uniforms: {
     uRevealTex: { value: THREE.Texture };
     uRevealMin: { value: THREE.Vector2 };
     uRevealSize: { value: THREE.Vector2 };
     uRevealGhost: { value: number };
+    uRevealEnabled: { value: number };
+    uClipMin: { value: THREE.Vector3 };
+    uClipMax: { value: THREE.Vector3 };
   };
 
   constructor(bounds: THREE.Box3) {
-    // Cover the XZ footprint, padded by the reveal radius so edges are reachable.
-    const pad = CONFIG.reveal.radius;
-    this.worldMin.set(bounds.min.x - pad, bounds.min.z - pad);
+    const size = new THREE.Vector3();
+    bounds.getSize(size);
+    // Clip box: the robust building bounds with a little headroom.
+    const pad = new THREE.Vector3(size.x, size.y, size.z).multiplyScalar(0.06);
+    const clipMin = bounds.min.clone().sub(pad);
+    const clipMax = bounds.max.clone().add(pad);
+
+    // Coverage grid spans the XZ footprint, padded by the reveal radius.
+    const cpad = CONFIG.reveal.radius;
+    this.worldMin.set(bounds.min.x - cpad, bounds.min.z - cpad);
     this.worldSize.set(
-      Math.max(1, bounds.max.x - bounds.min.x + pad * 2),
-      Math.max(1, bounds.max.z - bounds.min.z + pad * 2),
+      Math.max(1, bounds.max.x - bounds.min.x + cpad * 2),
+      Math.max(1, bounds.max.z - bounds.min.z + cpad * 2),
     );
 
     this.progress = new Float32Array(RES * RES);
@@ -48,10 +58,16 @@ export class SplatReveal {
       uRevealMin: { value: this.worldMin },
       uRevealSize: { value: this.worldSize },
       uRevealGhost: { value: CONFIG.reveal.ghostOpacity },
+      uRevealEnabled: { value: 0 },
+      uClipMin: { value: clipMin },
+      uClipMax: { value: clipMax },
     };
   }
 
-  /** World XZ -> texel indices (clamped). */
+  setRevealEnabled(on: boolean): void {
+    this.uniforms.uRevealEnabled.value = on ? 1 : 0;
+  }
+
   private texel(x: number, z: number): { tx: number; tz: number } {
     const u = (x - this.worldMin.x) / this.worldSize.x;
     const v = (z - this.worldMin.y) / this.worldSize.y;
@@ -61,10 +77,8 @@ export class SplatReveal {
     };
   }
 
-  /** Advance reveal: stamp newly-lagged visited spots, then fade started texels. */
   update(visitedLagged: Visited[], dt: number): void {
     let dirty = false;
-
     if (this.consumed < visitedLagged.length) {
       const rTexX = Math.ceil((CONFIG.reveal.radius / this.worldSize.x) * RES);
       const rTexZ = Math.ceil((CONFIG.reveal.radius / this.worldSize.y) * RES);
@@ -86,8 +100,6 @@ export class SplatReveal {
       this.consumed = visitedLagged.length;
       dirty = true;
     }
-
-    // Fade scanned texels toward full reveal.
     const rate = dt / Math.max(1e-6, CONFIG.reveal.fadeSeconds);
     for (let i = 0; i < this.progress.length; i++) {
       if (this.started[i] && this.progress[i] < 1) {
@@ -98,20 +110,16 @@ export class SplatReveal {
     if (dirty) this.tex.needsUpdate = true;
   }
 
-  /** True once the area around a world position has begun revealing. */
   isAreaRevealed(pos: [number, number, number]): boolean {
     const { tx, tz } = this.texel(pos[0], pos[2]);
     return this.progress[tz * RES + tx] > 0.02;
   }
 
-  /**
-   * Patch a splat ShaderMaterial to fade splats in by coverage. Idempotent per
-   * material. Safe to call once the splat mesh material exists.
-   */
+  /** Patch a splat ShaderMaterial: clip floaters (always) + reveal (toggled). */
   attachTo(material: THREE.ShaderMaterial): void {
-    const store = material as THREE.ShaderMaterial & { userData: { splatRevealed?: boolean } };
-    if (store.userData.splatRevealed) return;
-    store.userData.splatRevealed = true;
+    const store = material as THREE.ShaderMaterial & { userData: { splatPatched?: boolean } };
+    if (store.userData.splatPatched) return;
+    store.userData.splatPatched = true;
 
     const prev = material.onBeforeCompile;
     material.onBeforeCompile = (shader, renderer) => {
@@ -120,8 +128,10 @@ export class SplatReveal {
       shader.uniforms.uRevealMin = this.uniforms.uRevealMin;
       shader.uniforms.uRevealSize = this.uniforms.uRevealSize;
       shader.uniforms.uRevealGhost = this.uniforms.uRevealGhost;
+      shader.uniforms.uRevealEnabled = this.uniforms.uRevealEnabled;
+      shader.uniforms.uClipMin = this.uniforms.uClipMin;
+      shader.uniforms.uClipMax = this.uniforms.uClipMax;
 
-      // --- Vertex: sample coverage at the splat's world XZ into a varying. ---
       shader.vertexShader = shader.vertexShader
         .replace(
           'attribute uint splatIndex;',
@@ -129,6 +139,8 @@ export class SplatReveal {
            uniform sampler2D uRevealTex;
            uniform vec2 uRevealMin;
            uniform vec2 uRevealSize;
+           uniform vec3 uClipMin;
+           uniform vec3 uClipMax;
            varying float vReveal;`,
         )
         .replace(
@@ -136,6 +148,12 @@ export class SplatReveal {
           `vColor = uintToRGBAVec(sampledCenterColor.r);
            {
              vec4 wc = modelMatrix * vec4(splatCenter, 1.0);
+             if (wc.x < uClipMin.x || wc.x > uClipMax.x ||
+                 wc.y < uClipMin.y || wc.y > uClipMax.y ||
+                 wc.z < uClipMin.z || wc.z > uClipMax.z) {
+               gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+               return;
+             }
              vec2 ruv = (wc.xz - uRevealMin) / uRevealSize;
              float rev = 0.0;
              if (ruv.x >= 0.0 && ruv.x <= 1.0 && ruv.y >= 0.0 && ruv.y <= 1.0) {
@@ -145,20 +163,19 @@ export class SplatReveal {
            }`,
         );
 
-      // --- Fragment: fade/discard by reveal. ---
       shader.fragmentShader = shader.fragmentShader
         .replace(
           'varying vec2 vPosition;',
           `varying vec2 vPosition;
            varying float vReveal;
-           uniform float uRevealGhost;`,
+           uniform float uRevealGhost;
+           uniform float uRevealEnabled;`,
         )
         .replace(
           'gl_FragColor = vec4(color.rgb, opacity);',
-          // Not-yet-scanned splats stay faintly visible (ghost); scanned splats
-          // fade up to full. So the building is always visible and brightens as
-          // drones scan it.
-          `float vis = mix(uRevealGhost, 1.0, clamp(vReveal, 0.0, 1.0));
+          `float vis = uRevealEnabled > 0.5
+             ? mix(uRevealGhost, 1.0, clamp(vReveal, 0.0, 1.0))
+             : 1.0;
            gl_FragColor = vec4(color.rgb, opacity * vis);`,
         );
     };

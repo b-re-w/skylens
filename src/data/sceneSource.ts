@@ -54,8 +54,27 @@ export interface LoadedScene {
 const TARGET_EXTENT = 44;
 /** Points kept for the low-fi/reveal cloud (the full splat renders separately). */
 const TARGET_POINTS = 120_000;
-/** Stand antimatter15 .splat data upright (it reads flipped in three.js). */
-const UPRIGHT = new THREE.Quaternion().setFromEuler(new THREE.Euler(Math.PI, 0, 0));
+/** Orientation presets to stand the splat upright (SfM frames vary per asset). */
+const UP_PRESETS: Record<string, THREE.Euler> = {
+  none: new THREE.Euler(0, 0, 0),
+  x180: new THREE.Euler(Math.PI, 0, 0),
+  x90: new THREE.Euler(Math.PI / 2, 0, 0),
+  'x-90': new THREE.Euler(-Math.PI / 2, 0, 0),
+  z90: new THREE.Euler(0, 0, Math.PI / 2),
+  'z-90': new THREE.Euler(0, 0, -Math.PI / 2),
+  z180: new THREE.Euler(0, 0, Math.PI),
+};
+
+/** Chosen upright rotation. These SfM/photo splats are gravity-aligned already,
+ *  so no flip by default; override per asset with ?up=<preset>. */
+function uprightQuat(): THREE.Quaternion {
+  let key = 'none';
+  if (typeof window !== 'undefined') {
+    const q = new URLSearchParams(window.location.search).get('up');
+    if (q && UP_PRESETS[q]) key = q;
+  }
+  return new THREE.Quaternion().setFromEuler(UP_PRESETS[key]);
+}
 
 export interface LoadSceneOptions {
   url: string | null;
@@ -99,6 +118,7 @@ function deriveFromSplat(
   const total = buffer.getSplatCount();
   if (total === 0) return fallback();
 
+  const UPRIGHT = uprightQuat();
   const c = new THREE.Vector3();
 
   // --- ROBUST bounds (UPRIGHT-rotated frame) ---
@@ -120,8 +140,8 @@ function deriveFromSplat(
   ys.sort((a, b) => a - b);
   zs.sort((a, b) => a - b);
 
-  const LO = 0.02;
-  const HI = 0.98;
+  const LO = 0.05;
+  const HI = 0.95;
   const rMin = new THREE.Vector3(pct(xs, LO), pct(ys, LO), pct(zs, LO));
   const rMax = new THREE.Vector3(pct(xs, HI), pct(ys, HI), pct(zs, HI));
   const size = new THREE.Vector3().subVectors(rMax, rMin);
