@@ -78,7 +78,7 @@ export class ReconViewer {
   private readonly controls: OrbitControls;
   private readonly sceneCenter = new THREE.Vector3();
   private readonly desiredTarget = new THREE.Vector3();
-  private allowAutoRotate = false;
+  private allowAutoRotate = true;
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -129,13 +129,12 @@ export class ReconViewer {
     this.controls.target.copy(this.sceneCenter);
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.08;
-    this.controls.autoRotate = false;
+    this.controls.autoRotate = true;
     this.controls.autoRotateSpeed = 0.5;
-    // Auto-rotate is OFF by default (a moving camera is disorienting on a messy
-    // splat); enable with ?spin=on.
+    // Gentle idle orbit; disable with ?spin=off.
     if (typeof window !== 'undefined' &&
-        new URLSearchParams(window.location.search).get('spin') === 'on') {
-      this.allowAutoRotate = true;
+        new URLSearchParams(window.location.search).get('spin') === 'off') {
+      this.allowAutoRotate = false;
     }
     this.controls.minDistance = radius * 0.3;
     this.controls.maxDistance = radius * 8;

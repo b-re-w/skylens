@@ -20,10 +20,9 @@ export const CONFIG = {
     /** Opacity of not-yet-scanned splats (0 = fully hidden). Kept >0 so the
      *  building is always faintly visible ("ghost") and brightens when scanned. */
     ghostOpacity: 0.16,
-    /** Apply the progressive reveal MASK to the splat. Temporarily OFF to verify
-     *  the splat renders at all; the full splat shows regardless of scan.
-     *  Override per-page with ?reveal=on / ?reveal=off. */
-    splatMask: false,
+    /** Apply the progressive reveal MASK to the splat so it blooms in as drones
+     *  scan. Override per-page with ?reveal=on / ?reveal=off. */
+    splatMask: true,
   },
 
   // Drone path following / manual control (§4.2)
