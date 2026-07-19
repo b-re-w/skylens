@@ -55,11 +55,11 @@ export const CONFIG = {
   // sceneSource.ts). Swap `url` for your own capture later.
   splat: {
     enabled: true,
-    // A clean, high-quality, FULLY-TRAINED outdoor scene (the antimatter15 "train"
-    // garden demo): gravity-aligned and low-noise, so it reads as a real
-    // navigable 3D space. (dylanebert -7k checkpoints are undertrained/sparse;
-    // internet-photo "building" splats are dominated by sky/foreground noise.)
-    url: 'https://huggingface.co/cakewalk/splat-data/resolve/main/train.splat',
+    // A clean outdoor scene (Mip-NeRF360 "garden"): a wooden table on a grass
+    // lawn with a tree — verified to render clean + upright (needs the 180° flip,
+    // the standard antimatter15 convention). Internet-photo "building" splats
+    // were dominated by sky/foreground noise and abandoned.
+    url: 'https://huggingface.co/datasets/dylanebert/3dgs/resolve/main/garden/garden-7k.splat',
     /** Lighter scene used by e2e tests (~8.6 MB, loads fast). */
     urlLight: 'https://huggingface.co/datasets/stpete2/splat/resolve/main/church.splat',
   },

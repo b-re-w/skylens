@@ -223,9 +223,17 @@ function deriveFromSplat(
     samples.push(c.clone());
   }
 
-  // Orientation: manual ?up override, else automatic PCA leveling so an
-  // arbitrarily-tilted SfM/photo splat stands upright on the ground plane.
-  const UPRIGHT = manualUpQuat() ?? autoLevelQuat(samples);
+  // Orientation. Clean dataset splats are already gravity-aligned, so default to
+  // NO rotation. ?up=<preset|euler> overrides manually; ?level=on opts into the
+  // automatic PCA leveling (only useful for arbitrarily-tilted SfM/photo splats).
+  const wantLevel =
+    typeof window !== 'undefined' &&
+    new URLSearchParams(window.location.search).get('level') === 'on';
+  const UPRIGHT =
+    manualUpQuat() ??
+    (wantLevel
+      ? autoLevelQuat(samples)
+      : new THREE.Quaternion().setFromEuler(UP_PRESETS.x180));
 
   // --- ROBUST bounds (leveled frame) ---
   // Photo/SfM splats carry lots of outlier "floater" gaussians far from the real
