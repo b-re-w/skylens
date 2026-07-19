@@ -38,9 +38,10 @@ export class SplatScene {
       // GPU-accelerated path, and fine for a single static scene.
       gpuAcceleratedSort: false,
       dynamicScene: false,
-      // Clamp giant background gaussians (common in photo/SfM splats) so they
-      // don't smear across the whole view as fog. Default is 1024.
-      maxScreenSpaceSplatSize: 140,
+      // Clamp very large gaussians so they don't render as screen-filling fog
+      // (photo splats) or spikes (heavy scenes). A moderate value keeps normal
+      // ground/structure splats intact.
+      maxScreenSpaceSplatSize: 256,
     });
     this.parent.add(this.viewer);
   }

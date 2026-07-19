@@ -65,15 +65,110 @@ const UP_PRESETS: Record<string, THREE.Euler> = {
   z180: new THREE.Euler(0, 0, Math.PI),
 };
 
-/** Chosen upright rotation. These SfM/photo splats are gravity-aligned already,
- *  so no flip by default; override per asset with ?up=<preset>. */
-function uprightQuat(): THREE.Quaternion {
-  let key = 'none';
-  if (typeof window !== 'undefined') {
-    const q = new URLSearchParams(window.location.search).get('up');
-    if (q && UP_PRESETS[q]) key = q;
+/**
+ * Manual orientation override from ?up=<preset> or ?up=<x>,<y>,<z> euler degrees.
+ * Returns null when not specified (→ automatic PCA leveling is used instead).
+ */
+function manualUpQuat(): THREE.Quaternion | null {
+  if (typeof window === 'undefined') return null;
+  const q = new URLSearchParams(window.location.search).get('up');
+  if (!q) return null;
+  if (UP_PRESETS[q]) return new THREE.Quaternion().setFromEuler(UP_PRESETS[q]);
+  if (/^-?\d/.test(q)) {
+    const [x, y, z] = q.split(',').map((n) => (parseFloat(n) || 0) * (Math.PI / 180));
+    return new THREE.Quaternion().setFromEuler(new THREE.Euler(x, y, z));
   }
-  return new THREE.Quaternion().setFromEuler(UP_PRESETS[key]);
+  return null;
+}
+
+/** Jacobi eigen-decomposition of a symmetric 3x3 matrix (row-major length 9). */
+function jacobi3(m: number[]): { values: number[]; vectors: number[][] } {
+  const a = m.slice();
+  const v = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+  for (let sweep = 0; sweep < 24; sweep++) {
+    // Largest off-diagonal.
+    let p = 0, q = 1;
+    let max = Math.abs(a[1]);
+    if (Math.abs(a[2]) > max) { max = Math.abs(a[2]); p = 0; q = 2; }
+    if (Math.abs(a[5]) > max) { max = Math.abs(a[5]); p = 1; q = 2; }
+    if (max < 1e-12) break;
+    const app = a[p * 3 + p], aqq = a[q * 3 + q], apq = a[p * 3 + q];
+    const phi = 0.5 * Math.atan2(2 * apq, aqq - app);
+    const cs = Math.cos(phi), sn = Math.sin(phi);
+    for (let k = 0; k < 3; k++) {
+      const akp = a[k * 3 + p], akq = a[k * 3 + q];
+      a[k * 3 + p] = cs * akp - sn * akq;
+      a[k * 3 + q] = sn * akp + cs * akq;
+    }
+    for (let k = 0; k < 3; k++) {
+      const apk = a[p * 3 + k], aqk = a[q * 3 + k];
+      a[p * 3 + k] = cs * apk - sn * aqk;
+      a[q * 3 + k] = sn * apk + cs * aqk;
+    }
+    for (let k = 0; k < 3; k++) {
+      const vkp = v[k * 3 + p], vkq = v[k * 3 + q];
+      v[k * 3 + p] = cs * vkp - sn * vkq;
+      v[k * 3 + q] = sn * vkp + cs * vkq;
+    }
+  }
+  return {
+    values: [a[0], a[4], a[8]],
+    vectors: [
+      [v[0], v[3], v[6]],
+      [v[1], v[4], v[7]],
+      [v[2], v[5], v[8]],
+    ],
+  };
+}
+
+/**
+ * Auto-level a splat: the vertical axis of a wide structure (building/ground
+ * scene) has the SMALLEST spatial spread, so the smallest-variance principal
+ * axis of the point set is "up". Align it to world +Y, choosing the sign so the
+ * wider (ground) end sits at the bottom.
+ */
+function autoLevelQuat(samples: THREE.Vector3[]): THREE.Quaternion {
+  const n = samples.length;
+  if (n < 16) return new THREE.Quaternion();
+  const mean = new THREE.Vector3();
+  for (const s of samples) mean.add(s);
+  mean.multiplyScalar(1 / n);
+
+  let cxx = 0, cyy = 0, czz = 0, cxy = 0, cxz = 0, cyz = 0;
+  const d = new THREE.Vector3();
+  for (const s of samples) {
+    d.subVectors(s, mean);
+    cxx += d.x * d.x; cyy += d.y * d.y; czz += d.z * d.z;
+    cxy += d.x * d.y; cxz += d.x * d.z; cyz += d.y * d.z;
+  }
+  const { values, vectors } = jacobi3([cxx, cxy, cxz, cxy, cyy, cyz, cxz, cyz, czz]);
+  // Smallest eigenvalue → up axis.
+  let mi = 0;
+  if (values[1] < values[mi]) mi = 1;
+  if (values[2] < values[mi]) mi = 2;
+  const up = new THREE.Vector3(vectors[mi][0], vectors[mi][1], vectors[mi][2]).normalize();
+
+  // Sign: project onto up; the "ground" end has larger horizontal spread.
+  const along: number[] = samples.map((s) => d.subVectors(s, mean).dot(up));
+  along.sort((a, b) => a - b);
+  const lo = along[Math.floor(0.1 * n)];
+  const hi = along[Math.floor(0.9 * n)];
+  let spreadLo = 0, spreadHi = 0, nLo = 0, nHi = 0;
+  const tmp = new THREE.Vector3();
+  for (const s of samples) {
+    const t = tmp.subVectors(s, mean).dot(up);
+    // Horizontal offset = distance from the up axis.
+    const horiz = tmp.clone().addScaledVector(up, -t).length();
+    if (t <= lo) { spreadLo += horiz; nLo++; }
+    else if (t >= hi) { spreadHi += horiz; nHi++; }
+  }
+  const avgLo = nLo ? spreadLo / nLo : 0;
+  const avgHi = nHi ? spreadHi / nHi : 0;
+  // Want the wider end at the BOTTOM (−up before flip). If the high end is wider,
+  // flip so it becomes the bottom.
+  if (avgHi > avgLo) up.negate();
+
+  return new THREE.Quaternion().setFromUnitVectors(up, new THREE.Vector3(0, 1, 0));
 }
 
 export interface LoadSceneOptions {
@@ -118,20 +213,29 @@ function deriveFromSplat(
   const total = buffer.getSplatCount();
   if (total === 0) return fallback();
 
-  const UPRIGHT = uprightQuat();
   const c = new THREE.Vector3();
 
-  // --- ROBUST bounds (UPRIGHT-rotated frame) ---
+  // Gather sampled raw centers (for auto-leveling + robust bounds).
+  const sampleStride = Math.max(1, Math.floor(total / 60_000));
+  const samples: THREE.Vector3[] = [];
+  for (let i = 0; i < total; i += sampleStride) {
+    buffer.getSplatCenter(i, c);
+    samples.push(c.clone());
+  }
+
+  // Orientation: manual ?up override, else automatic PCA leveling so an
+  // arbitrarily-tilted SfM/photo splat stands upright on the ground plane.
+  const UPRIGHT = manualUpQuat() ?? autoLevelQuat(samples);
+
+  // --- ROBUST bounds (leveled frame) ---
   // Photo/SfM splats carry lots of outlier "floater" gaussians far from the real
   // structure. Naive min/max is dominated by them, so we fit to robust
   // percentile bounds instead — the building, not the noise, sets the scale.
-  const sampleStride = Math.max(1, Math.floor(total / 60_000));
   const xs: number[] = [];
   const ys: number[] = [];
   const zs: number[] = [];
-  for (let i = 0; i < total; i += sampleStride) {
-    buffer.getSplatCenter(i, c);
-    c.applyQuaternion(UPRIGHT);
+  for (const sv of samples) {
+    c.copy(sv).applyQuaternion(UPRIGHT);
     xs.push(c.x);
     ys.push(c.y);
     zs.push(c.z);

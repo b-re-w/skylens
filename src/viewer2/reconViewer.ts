@@ -78,7 +78,7 @@ export class ReconViewer {
   private readonly controls: OrbitControls;
   private readonly sceneCenter = new THREE.Vector3();
   private readonly desiredTarget = new THREE.Vector3();
-  private allowAutoRotate = true;
+  private allowAutoRotate = false;
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -99,16 +99,25 @@ export class ReconViewer {
     key.position.set(10, 20, 8);
     this.scene.add(key);
 
-    // Frame the reconstructed scene from its robust bounds.
-    const sphere = new THREE.Sphere();
-    sceneData.bounds.getBoundingSphere(sphere);
-    this.sceneCenter.copy(sphere.center);
-    const radius = Math.max(1, sphere.radius);
-    this.scene.fog = new THREE.Fog(CONFIG.color.reconBg, radius * 2, radius * 6);
+    // Frame on the DENSE CORE, not the full bounds: outdoor scenes have a wide
+    // spread-out ground that inflates the bounding sphere and leaves the actual
+    // subject tiny. Use the median point-distance from the center as the scale.
+    sceneData.bounds.getCenter(this.sceneCenter);
+    const cx = this.sceneCenter.x, cy = this.sceneCenter.y, cz = this.sceneCenter.z;
+    const pos = sceneData.positions;
+    const dists: number[] = [];
+    for (let i = 0; i < pos.length; i += 3) {
+      const dx = pos[i] - cx, dy = pos[i + 1] - cy, dz = pos[i + 2] - cz;
+      dists.push(Math.sqrt(dx * dx + dy * dy + dz * dz));
+    }
+    dists.sort((a, b) => a - b);
+    const core = dists.length ? dists[Math.floor(dists.length * 0.6)] : 10;
+    const radius = Math.max(1, core);
+    this.scene.fog = new THREE.Fog(CONFIG.color.reconBg, radius * 3, radius * 9);
 
     const aspect = canvas.clientWidth / Math.max(1, canvas.clientHeight);
-    this.camera = new THREE.PerspectiveCamera(50, aspect, 0.05, radius * 20);
-    const dist = radius * 1.7;
+    this.camera = new THREE.PerspectiveCamera(50, aspect, 0.05, radius * 40);
+    const dist = radius * 2.6;
     this.camera.position.set(
       this.sceneCenter.x + dist * 0.75,
       this.sceneCenter.y + dist * 0.4,
@@ -120,11 +129,13 @@ export class ReconViewer {
     this.controls.target.copy(this.sceneCenter);
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.08;
-    this.controls.autoRotate = true;
+    this.controls.autoRotate = false;
     this.controls.autoRotateSpeed = 0.5;
+    // Auto-rotate is OFF by default (a moving camera is disorienting on a messy
+    // splat); enable with ?spin=on.
     if (typeof window !== 'undefined' &&
-        new URLSearchParams(window.location.search).get('spin') === 'off') {
-      this.allowAutoRotate = false;
+        new URLSearchParams(window.location.search).get('spin') === 'on') {
+      this.allowAutoRotate = true;
     }
     this.controls.minDistance = radius * 0.3;
     this.controls.maxDistance = radius * 8;

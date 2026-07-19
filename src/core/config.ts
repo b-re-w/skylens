@@ -55,10 +55,12 @@ export const CONFIG = {
   // sceneSource.ts). Swap `url` for your own capture later.
   splat: {
     enabled: true,
-    // An OUTDOOR building exterior (the Colosseum — a ruined structure) so RECON
-    // reads as a disaster-site building. Public sample from the stpete2/splat set.
-    url: 'https://huggingface.co/datasets/stpete2/splat/resolve/main/colosseum_photo.splat',
-    /** Lighter outdoor building scene used by e2e tests (a church, ~8.6 MB). */
+    // A clean, high-quality, FULLY-TRAINED outdoor scene (the antimatter15 "train"
+    // garden demo): gravity-aligned and low-noise, so it reads as a real
+    // navigable 3D space. (dylanebert -7k checkpoints are undertrained/sparse;
+    // internet-photo "building" splats are dominated by sky/foreground noise.)
+    url: 'https://huggingface.co/cakewalk/splat-data/resolve/main/train.splat',
+    /** Lighter scene used by e2e tests (~8.6 MB, loads fast). */
     urlLight: 'https://huggingface.co/datasets/stpete2/splat/resolve/main/church.splat',
   },
 
